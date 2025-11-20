@@ -1,0 +1,29 @@
+# Node
+node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+package-lock.json
+
+# Build outputs
+dist/
+build/
+
+# Cloudflare
+.wrangler/
+.wrangler-state/
+.wrangler/**
+
+# Local env/secrets
+*.env
+.env.*
+.dev.vars
+
+# macOS
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+

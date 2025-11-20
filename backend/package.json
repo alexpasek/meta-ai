@@ -1,0 +1,13 @@
+{
+  "name": "meta-ai-scheduler-backend",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "d1:migrate": "wrangler d1 migrations apply meta_ai_scheduler --remote"
+  },
+  "devDependencies": {
+    "wrangler": "^3.91.0"
+  }
+}
