@@ -4,12 +4,8 @@
 // Features:
 // - REST API for posts: list/create/update
 // - AI caption endpoint using OpenAI Chat Completions
+// - Optional upload to R2 + serving media via the same Worker
 // - Cron scheduler that publishes due posts to Meta Graph API
-//
-// NOTE: This is a starter template. You must:
-// - Configure D1 in wrangler.toml and create the DB + apply schema.sql.
-// - Add environment variables (OpenAI + Meta tokens) in Cloudflare dashboard or wrangler.
-// - Register a Meta app and get proper permissions + long-lived tokens.
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -19,82 +15,41 @@ const CORS_HEADERS = {
 
 const JSON_HEADERS = { "Content-Type": "application/json", ...CORS_HEADERS };
 
-export default {
-  async fetch(request, env, ctx) {
-    try {
-      const url = new URL(request.url);
-      const { pathname } = url;
-      const method = request.method.toUpperCase();
+let schemaReady = false;
+let schemaCheckPromise = null;
 
-      await ensureSchema(env);
+async function ensureSchema(env) {
+  if (schemaReady) return;
+  if (schemaCheckPromise) return schemaCheckPromise;
 
-      if (method === "OPTIONS") {
-        return new Response(null, { status: 204, headers: CORS_HEADERS });
-      }
+  schemaCheckPromise = (async () => {
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS posts (
+        id TEXT PRIMARY KEY,
+        title TEXT,
+        image_url TEXT NOT NULL,
+        caption TEXT,
+        hashtags TEXT,
+        platforms TEXT NOT NULL,
+        scheduled_at INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        published_at INTEGER,
+        error TEXT
+      )`
+    ).run();
 
-      if (pathname === "/api/health") {
-        return new Response(JSON.stringify({ ok: true, time: new Date().toISOString() }), {
-          headers: JSON_HEADERS,
-        });
-      }
+    await env.DB.prepare(
+      "CREATE INDEX IF NOT EXISTS idx_posts_status_scheduled ON posts (status, scheduled_at)"
+    ).run();
 
-      if (pathname === "/api/posts" && method === "GET") {
-        return await listPosts(env, url);
-      }
+    schemaReady = true;
+    schemaCheckPromise = null;
+  })();
 
-      if (pathname === "/api/posts" && method === "POST") {
-        return await createPost(request, env);
-      }
-
-      if (pathname.startsWith("/api/posts/")) {
-        const id = pathname.split("/")[3]; // /api/posts/:id or /api/posts/:id/schedule
-        const tail = pathname.split("/").slice(4).join("/");
-
-        if (!id) {
-          return new Response(JSON.stringify({ error: "Missing post id" }), { status: 400, headers: JSON_HEADERS });
-        }
-
-        if (tail === "schedule" && method === "POST") {
-          return await markPostScheduled(id, env);
-        }
-
-        if (method === "PUT") {
-          return await updatePost(id, request, env);
-        }
-
-        if (method === "GET" && !tail) {
-          return await getPost(id, env);
-        }
-      }
-
-      if (pathname === "/api/ai/caption" && method === "POST") {
-        return await generateCaption(request, env);
-      }
-
-      return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: JSON_HEADERS });
-    } catch (err) {
-      console.error("Unhandled error in fetch:", err);
-      return new Response(JSON.stringify({ error: "Internal error", detail: String(err) }), {
-        status: 500,
-        headers: JSON_HEADERS,
-      });
-    }
-  },
-
-  async scheduled(event, env, ctx) {
-    // Runs from Cron trigger every few minutes.
-    try {
-      await ensureSchema(env);
-      await runScheduler(env);
-    } catch (err) {
-      console.error("Scheduler error:", err);
-    }
-  },
-};
-
-/**
- * Helpers
- */
+  return schemaCheckPromise;
+}
 
 function buildCaption(post) {
   const parts = [];
@@ -112,48 +67,89 @@ function cleanBaseUrl(value, fallback) {
   return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
-let schemaReady = false;
-let schemaCheckPromise = null;
-
-async function ensureSchema(env) {
-  if (schemaReady) return;
-  if (schemaCheckPromise) return schemaCheckPromise;
-
-  schemaCheckPromise = (async () => {
+export default {
+  async fetch(request, env, ctx) {
     try {
-      await env.DB.prepare(
-        `CREATE TABLE IF NOT EXISTS posts (
-          id TEXT PRIMARY KEY,
-          title TEXT,
-          image_url TEXT NOT NULL,
-          caption TEXT,
-          hashtags TEXT,
-          platforms TEXT NOT NULL,
-          scheduled_at INTEGER NOT NULL,
-          status TEXT NOT NULL,
-          created_at INTEGER NOT NULL,
-          updated_at INTEGER NOT NULL,
-          published_at INTEGER,
-          error TEXT
-        )`
-      ).run();
+      const url = new URL(request.url);
+      const { pathname } = url;
+      const method = request.method.toUpperCase();
 
-      await env.DB.prepare(
-        "CREATE INDEX IF NOT EXISTS idx_posts_status_scheduled ON posts (status, scheduled_at)"
-      ).run();
+      if (method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: CORS_HEADERS });
+      }
 
-      schemaReady = true;
+      if (pathname === "/api/health") {
+        return new Response(JSON.stringify({ ok: true, time: new Date().toISOString() }), {
+          headers: JSON_HEADERS,
+        });
+      }
+
+      if (pathname === "/api/upload" && method === "POST") {
+        return handleUpload(request, env);
+      }
+
+      if (pathname.startsWith("/media/") && method === "GET") {
+        return serveMedia(pathname, env);
+      }
+
+      if (pathname === "/api/posts" && method === "GET") {
+        await ensureSchema(env);
+        return listPosts(env, url);
+      }
+
+      if (pathname === "/api/posts" && method === "POST") {
+        await ensureSchema(env);
+        return createPost(request, env);
+      }
+
+      if (pathname.startsWith("/api/posts/")) {
+        await ensureSchema(env);
+        const id = pathname.split("/")[3]; // /api/posts/:id or /api/posts/:id/schedule
+        const tail = pathname.split("/").slice(4).join("/");
+
+        if (!id) {
+          return new Response(JSON.stringify({ error: "Missing post id" }), {
+            status: 400,
+            headers: JSON_HEADERS,
+          });
+        }
+
+        if (tail === "schedule" && method === "POST") {
+          return markPostScheduled(id, env);
+        }
+
+        if (method === "PUT") {
+          return updatePost(id, request, env);
+        }
+
+        if (method === "GET" && !tail) {
+          return getPost(id, env);
+        }
+      }
+
+      if (pathname === "/api/ai/caption" && method === "POST") {
+        return generateCaption(request, env);
+      }
+
+      return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: JSON_HEADERS });
     } catch (err) {
-      schemaReady = false;
-      console.error("Schema ensure error:", err);
-      throw err;
-    } finally {
-      schemaCheckPromise = null;
+      console.error("Unhandled error in fetch:", err);
+      return new Response(JSON.stringify({ error: "Internal error", detail: String(err) }), {
+        status: 500,
+        headers: JSON_HEADERS,
+      });
     }
-  })();
+  },
 
-  return schemaCheckPromise;
-}
+  async scheduled(event, env, ctx) {
+    try {
+      await ensureSchema(env);
+      await runScheduler(env);
+    } catch (err) {
+      console.error("Scheduler error:", err);
+    }
+  },
+};
 
 /**
  * DB helpers (D1)
@@ -236,10 +232,17 @@ async function updatePost(id, request, env) {
   const imageUrl = body.imageUrl ?? existing.image_url;
   const caption = body.caption ?? existing.caption;
   const hashtags = body.hashtags ?? existing.hashtags;
-  const platforms = body.platforms ? (Array.isArray(body.platforms) ? body.platforms.join(",") : String(body.platforms)) : existing.platforms;
-  const scheduledAt = body.scheduledAt !== undefined
-    ? (typeof body.scheduledAt === "number" ? body.scheduledAt : Number(body.scheduledAt))
-    : existing.scheduled_at;
+  const platforms = body.platforms
+    ? Array.isArray(body.platforms)
+      ? body.platforms.join(",")
+      : String(body.platforms)
+    : existing.platforms;
+  const scheduledAt =
+    body.scheduledAt !== undefined
+      ? typeof body.scheduledAt === "number"
+        ? body.scheduledAt
+        : Number(body.scheduledAt)
+      : existing.scheduled_at;
   const status = body.status ?? existing.status;
   const updatedAt = nowUnix();
 
@@ -278,10 +281,13 @@ async function generateCaption(request, env) {
   const apiKey = env.OPENAI_API_KEY || env.OPENAI_KEY || env.OPENAI_TOKEN;
 
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: "OPENAI_API_KEY not set (tried OPENAI_API_KEY/OPENAI_KEY/OPENAI_TOKEN)" }), {
-      status: 400,
-      headers: JSON_HEADERS,
-    });
+    return new Response(
+      JSON.stringify({ error: "OPENAI_API_KEY not set (tried OPENAI_API_KEY/OPENAI_KEY/OPENAI_TOKEN)" }),
+      {
+        status: 400,
+        headers: JSON_HEADERS,
+      }
+    );
   }
 
   const body = await request.json();
@@ -344,7 +350,7 @@ Rules:
   }
 
   const data = await res.json();
-  const text = data.choices?.[0]?.message?.content?.trim() ?? "";
+  const text = data?.choices?.[0]?.message?.content?.trim() ?? "";
 
   return new Response(JSON.stringify({ text }), { headers: JSON_HEADERS });
 }
@@ -373,7 +379,10 @@ async function runScheduler(env) {
 
   for (const post of results) {
     try {
-      const platforms = (post.platforms || "").split(",").map((p) => p.trim()).filter(Boolean);
+      const platforms = (post.platforms || "")
+        .split(",")
+        .map((p) => p.trim())
+        .filter(Boolean);
 
       if (platforms.includes("fb")) {
         await publishToFacebook(post, env);
@@ -394,6 +403,84 @@ async function runScheduler(env) {
         .run();
     }
   }
+}
+
+/**
+ * File upload → R2
+ * POST /api/upload
+ * Body: multipart/form-data with field "file"
+ * Returns: { key, url }
+ */
+async function handleUpload(request, env) {
+  if (!env.MEDIA_BUCKET) {
+    return new Response(JSON.stringify({ error: "MEDIA_BUCKET not configured" }), {
+      status: 500,
+      headers: JSON_HEADERS,
+    });
+  }
+
+  let formData;
+  try {
+    formData = await request.formData();
+  } catch (err) {
+    console.error("Error parsing formData in /api/upload:", err);
+    return new Response(JSON.stringify({ error: "Invalid form data" }), {
+      status: 400,
+      headers: JSON_HEADERS,
+    });
+  }
+
+  const file = formData.get("file");
+  if (!file || typeof file === "string") {
+    return new Response(JSON.stringify({ error: "Missing file field" }), {
+      status: 400,
+      headers: JSON_HEADERS,
+    });
+  }
+
+  const originalName = file.name || "upload";
+  const safeName = originalName.replace(/[^a-zA-Z0-9._-]+/g, "_");
+  const key = `${crypto.randomUUID()}-${safeName}`;
+
+  await env.MEDIA_BUCKET.put(key, file.stream(), {
+    httpMetadata: {
+      contentType: file.type || "application/octet-stream",
+    },
+  });
+
+  const base = new URL(request.url).origin;
+  const url = `${base}/media/${encodeURIComponent(key)}`;
+
+  return new Response(JSON.stringify({ key, url }), {
+    status: 201,
+    headers: JSON_HEADERS,
+  });
+}
+
+/**
+ * Serve media from R2
+ * GET /media/:key
+ */
+async function serveMedia(pathname, env) {
+  if (!env.MEDIA_BUCKET) {
+    return new Response("MEDIA_BUCKET not configured", { status: 500 });
+  }
+
+  const key = decodeURIComponent(pathname.replace(/^\/media\//, ""));
+  if (!key) {
+    return new Response("Missing key", { status: 400 });
+  }
+
+  const object = await env.MEDIA_BUCKET.get(key);
+  if (!object) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+
+  return new Response(object.body, { headers });
 }
 
 /**

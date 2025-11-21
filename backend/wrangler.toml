@@ -8,5 +8,11 @@ database_id = "fc9d50c4-7ef1-4b22-a7fa-3975015322f6"
 database_name = "meta_ai_scheduler"
 migrations_dir = "migrations"
 
+
+# NEW: R2 bucket for media
+[[r2_buckets]]
+binding = "MEDIA_BUCKET"
+bucket_name = "meta-ai-scheduler-media"
+
 [triggers]
 crons = ["*/5 * * * *"]
