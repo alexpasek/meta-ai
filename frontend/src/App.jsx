@@ -88,6 +88,27 @@ function App() {
     }
   }
 
+  async function uploadFile(draft) {
+    if (!draft.file) return null;
+
+    const formData = new FormData();
+    formData.append("file", draft.file);
+
+    const res = await fetch(`${API_BASE}/api/upload`, {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!res.ok) {
+      console.error("Upload failed", await res.text());
+      throw new Error("Upload failed");
+    }
+
+    const data = await res.json();
+    // data.url is served by the same Worker at /media/:key
+    return data.url;
+  }
+
   async function handleSaveSchedules() {
     setLoading(true);
     try {
@@ -95,9 +116,18 @@ function App() {
         const scheduledUnix = toUnixSeconds(draft.scheduledLocal);
         if (!scheduledUnix) continue;
 
-        // In a real app you would upload the file to R2 or another storage
-        // and pass a public URL. For now we require you to paste a URL.
-        const imageUrl = draft.imageUrl || prompt(`Enter public image URL for: ${draft.file.name}`);
+        let imageUrl = draft.imageUrl;
+
+        // If we don't have a URL yet, upload the file to /api/upload
+        if (!imageUrl && draft.file) {
+          try {
+            imageUrl = await uploadFile(draft);
+            updateDraft(draft.id, { imageUrl });
+          } catch (err) {
+            console.error("Upload error for draft", draft.id, err);
+            continue; // skip this one
+          }
+        }
 
         if (!imageUrl) continue;
 
