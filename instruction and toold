@@ -1,0 +1,17 @@
+npx wrangler tail meta-ai-scheduler-backend.      run from server logs
+
+
+curl -X POST https://meta-ai-scheduler-backend.webtoronto22.workers.dev/api/scheduler/run.
+      terminal post from server 
+
+npm run deploy   import to the servrt
+
+VITE_API_BASE_URL=https://meta-ai-scheduler-backend.webtoronto22.workers.dev npm run build.  front end step 1redeploy
+npx wrangler pages deploy dist --project-name=meta-ai-scheduler-ui. front end step 2
+
+
+
+
+https://developers.facebook.com/tools/explorer/?method=GET&path=me%2Faccounts&version=v24.0.   get page token
+
+npx wrangler secret put META_IG_ACCESS_TOKEN_EPF renter token vie backend

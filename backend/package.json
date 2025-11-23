@@ -8,6 +8,6 @@
     "d1:migrate": "wrangler d1 migrations apply meta_ai_scheduler --remote"
   },
   "devDependencies": {
-    "wrangler": "^3.91.0"
+    "wrangler": "^4.50.0"
   }
 }

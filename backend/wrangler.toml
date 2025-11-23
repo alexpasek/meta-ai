@@ -9,10 +9,20 @@ database_name = "meta_ai_scheduler"
 migrations_dir = "migrations"
 
 
+
 # NEW: R2 bucket for media
 [[r2_buckets]]
 binding = "MEDIA_BUCKET"
 bucket_name = "meta-ai-scheduler-media"
+
+[vars]
+META_GRAPH_VERSION = "v19.0"            # optional but nice
+META_PAGE_ID = "807570945780920"
+META_IG_USER_ID = "17841477810663121"
+META_PAGE_ID_EPF = "227501048006900"
+META_IG_USER_ID_EPF = "17841407738659472"
+META_PAGE_ID_WALLPAPER = "903869466136721"
+META_IG_USER_ID_WALLPAPER = "17841478264788015"
 
 [triggers]
 crons = ["*/5 * * * *"]

@@ -24,6 +24,7 @@ function App() {
   const [files, setFiles] = useState([]);
   const [scheduledPosts, setScheduledPosts] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [cancelingId, setCancelingId] = useState(null);
 
   useEffect(() => {
     loadScheduled();
@@ -49,6 +50,7 @@ function App() {
       hashtags: "",
       platforms: ["fb", "ig"],
       scheduledLocal: "",
+      profileKey: "calgary",
       status: "draft",
       aiLoading: false,
     }));
@@ -131,15 +133,16 @@ function App() {
 
         if (!imageUrl) continue;
 
-        const body = {
-          title: draft.file.name,
-          imageUrl,
-          caption: draft.caption,
-          hashtags: draft.hashtags,
-          platforms: draft.platforms,
-          scheduledAt: scheduledUnix,
-          status: "scheduled",
-        };
+      const body = {
+        title: draft.file.name,
+        imageUrl,
+        caption: draft.caption,
+        hashtags: draft.hashtags,
+        platforms: draft.platforms,
+        scheduledAt: scheduledUnix,
+        status: "scheduled",
+        profileKey: draft.profileKey,
+      };
 
         await fetch(`${API_BASE}/api/posts`, {
           method: "POST",
@@ -171,6 +174,22 @@ function App() {
         };
       })
     );
+  }
+
+  async function handleCancel(id) {
+    setCancelingId(id);
+    try {
+      const res = await fetch(`${API_BASE}/api/posts/${id}/cancel`, { method: "POST" });
+      if (!res.ok) {
+        throw new Error(`Cancel failed (${res.status})`);
+      }
+      await loadScheduled();
+    } catch (err) {
+      console.error("Cancel error", err);
+      alert(err?.message || "Failed to cancel post");
+    } finally {
+      setCancelingId(null);
+    }
   }
 
   return (
@@ -230,6 +249,17 @@ function App() {
                       </div>
                     </div>
                     <label className="field">
+                      <span>Profile</span>
+                      <select
+                        value={draft.profileKey}
+                        onChange={(e) => updateDraft(draft.id, { profileKey: e.target.value })}
+                      >
+                        <option value="calgary">Calgary – Popcorn Ceiling Removal</option>
+                        <option value="epf">EPF Pro Services</option>
+                        <option value="wallpaper">Wallpaper Removal Pro</option>
+                      </select>
+                    </label>
+                    <label className="field">
                       <span>Schedule time</span>
                       <input
                         type="datetime-local"
@@ -278,9 +308,28 @@ function App() {
                     <div className="scheduled-meta">
                       <span>{(post.platforms || "").toUpperCase()}</span>
                       <span>at {fromUnixSeconds(post.scheduled_at)}</span>
+                      <span className="text-xs px-2 py-0.5 rounded bg-slate-100">
+                        {post.profile_key === "calgary"
+                          ? "Calgary"
+                          : post.profile_key === "epf"
+                          ? "EPF"
+                          : post.profile_key === "wallpaper"
+                          ? "Wallpaper"
+                          : post.profile_key || "Default"}
+                      </span>
                     </div>
                   </div>
                   <div className={`badge ${post.status}`}>{post.status}</div>
+                  {post.status === "scheduled" && (
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => handleCancel(post.id)}
+                      disabled={cancelingId === post.id}
+                    >
+                      {cancelingId === post.id ? "Cancelling..." : "Cancel"}
+                    </button>
+                  )}
                 </div>
               ))}
             </div>

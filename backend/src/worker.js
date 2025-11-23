@@ -8,9 +8,9 @@
 // - Cron scheduler that publishes due posts to Meta Graph API
 
 const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
 const JSON_HEADERS = { "Content-Type": "application/json", ...CORS_HEADERS };
@@ -23,6 +23,7 @@ async function ensureSchema(env) {
   if (schemaCheckPromise) return schemaCheckPromise;
 
   schemaCheckPromise = (async () => {
+    // Base table (for fresh DBs)
     await env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS posts (
         id TEXT PRIMARY KEY,
@@ -40,6 +41,17 @@ async function ensureSchema(env) {
       )`
     ).run();
 
+    // Add profile_key column if missing (for existing DB)
+    try {
+      await env.DB.prepare("ALTER TABLE posts ADD COLUMN profile_key TEXT").run();
+      console.log("Added profile_key column to posts table");
+    } catch (err) {
+      const msg = String(err || "");
+      if (!msg.includes("duplicate column") && !msg.includes("duplicate column name")) {
+        console.warn("ensureSchema: error adding profile_key column:", err);
+      }
+    }
+
     await env.DB.prepare(
       "CREATE INDEX IF NOT EXISTS idx_posts_status_scheduled ON posts (status, scheduled_at)"
     ).run();
@@ -52,60 +64,61 @@ async function ensureSchema(env) {
 }
 
 function buildCaption(post) {
-  const parts = [];
-  if (post.caption) parts.push(post.caption);
-  if (post.hashtags) parts.push(post.hashtags);
-  return parts.join("\n\n");
+    const parts = [];
+    if (post.caption) parts.push(post.caption);
+    if (post.hashtags) parts.push(post.hashtags);
+    return parts.join("\n\n");
 }
 
 function nowUnix() {
-  return Math.floor(Date.now() / 1000);
+    return Math.floor(Date.now() / 1000);
 }
 
 function cleanBaseUrl(value, fallback) {
-  if (!value) return fallback;
-  return value.endsWith("/") ? value.slice(0, -1) : value;
+    if (!value) return fallback;
+    return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
 export default {
-  async fetch(request, env, ctx) {
-    try {
-      const url = new URL(request.url);
-      const { pathname } = url;
-      const method = request.method.toUpperCase();
+    async fetch(request, env, ctx) {
+        try {
+            const url = new URL(request.url);
+            const { pathname } = url;
+            const method = request.method.toUpperCase();
 
-      if (method === "OPTIONS") {
-        return new Response(null, { status: 204, headers: CORS_HEADERS });
-      }
+            if (method === "OPTIONS") {
+                return new Response(null, { status: 204, headers: CORS_HEADERS });
+            }
 
-      if (pathname === "/api/health") {
-        return new Response(JSON.stringify({ ok: true, time: new Date().toISOString() }), {
-          headers: JSON_HEADERS,
-        });
-      }
+            if (pathname === "/api/health") {
+                return new Response(JSON.stringify({ ok: true, time: new Date().toISOString() }), {
+                    headers: JSON_HEADERS,
+                });
+            }
 
-      if (pathname === "/api/upload" && method === "POST") {
-        return handleUpload(request, env);
-      }
+            if (pathname === "/api/upload" && method === "POST") {
+                return handleUpload(request, env);
+            }
 
-      if (pathname.startsWith("/media/") && method === "GET") {
-        return serveMedia(pathname, env);
-      }
+            if (pathname.startsWith("/media/") && method === "GET") {
+                return serveMedia(pathname, env);
+            }
 
-      if (pathname === "/api/posts" && method === "GET") {
-        await ensureSchema(env);
-        return listPosts(env, url);
-      }
+            if (pathname === "/api/posts" && method === "GET") {
+                await ensureSchema(env);
+                return listPosts(env, url);
+            }
 
-      if (pathname === "/api/posts" && method === "POST") {
-        await ensureSchema(env);
-        return createPost(request, env);
-      }
+            if (pathname === "/api/posts" && method === "POST") {
+                await ensureSchema(env);
+                return createPost(request, env);
+            }
 
       if (pathname.startsWith("/api/posts/")) {
         await ensureSchema(env);
-        const id = pathname.split("/")[3]; // /api/posts/:id or /api/posts/:id/schedule
-        const tail = pathname.split("/").slice(4).join("/");
+        const parts = pathname.split("/");
+        const id = parts[3]; // /api/posts/:id/...
+        const tail = parts.slice(4).join("/");
 
         if (!id) {
           return new Response(JSON.stringify({ error: "Missing post id" }), {
@@ -118,7 +131,11 @@ export default {
           return markPostScheduled(id, env);
         }
 
-        if (method === "PUT") {
+        if (tail === "cancel" && method === "POST") {
+          return cancelPost(id, env);
+        }
+
+        if (method === "PUT" && !tail) {
           return updatePost(id, request, env);
         }
 
@@ -127,28 +144,34 @@ export default {
         }
       }
 
-      if (pathname === "/api/ai/caption" && method === "POST") {
-        return generateCaption(request, env);
-      }
+            if (pathname === "/api/ai/caption" && method === "POST") {
+                return generateCaption(request, env);
+            }
 
-      return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: JSON_HEADERS });
-    } catch (err) {
-      console.error("Unhandled error in fetch:", err);
-      return new Response(JSON.stringify({ error: "Internal error", detail: String(err) }), {
-        status: 500,
-        headers: JSON_HEADERS,
-      });
-    }
-  },
+            if (pathname === "/api/scheduler/run" && method === "POST") {
+                await ensureSchema(env);
+                await runScheduler(env);
+                return new Response(JSON.stringify({ ok: true }), { headers: JSON_HEADERS });
+            }
 
-  async scheduled(event, env, ctx) {
-    try {
-      await ensureSchema(env);
-      await runScheduler(env);
-    } catch (err) {
-      console.error("Scheduler error:", err);
-    }
-  },
+            return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: JSON_HEADERS });
+        } catch (err) {
+            console.error("Unhandled error in fetch:", err);
+            return new Response(JSON.stringify({ error: "Internal error", detail: String(err) }), {
+                status: 500,
+                headers: JSON_HEADERS,
+            });
+        }
+    },
+
+    async scheduled(event, env, ctx) {
+        try {
+            await ensureSchema(env);
+            await runScheduler(env);
+        } catch (err) {
+            console.error("Scheduler error:", err);
+        }
+    },
 };
 
 /**
@@ -156,28 +179,28 @@ export default {
  */
 
 async function listPosts(env, url) {
-  const searchParams = url.searchParams;
-  const statusFilter = searchParams.get("status");
-  let query = "SELECT * FROM posts";
-  const binds = [];
+    const searchParams = url.searchParams;
+    const statusFilter = searchParams.get("status");
+    let query = "SELECT * FROM posts";
+    const binds = [];
 
-  if (statusFilter) {
-    query += " WHERE status = ?";
-    binds.push(statusFilter);
-  }
-  query += " ORDER BY scheduled_at ASC";
+    if (statusFilter) {
+        query += " WHERE status = ?";
+        binds.push(statusFilter);
+    }
+    query += " ORDER BY scheduled_at ASC";
 
-  const { results } = await env.DB.prepare(query).bind(...binds).all();
+    const { results } = await env.DB.prepare(query).bind(...binds).all();
 
-  return new Response(JSON.stringify(results || []), { headers: JSON_HEADERS });
+    return new Response(JSON.stringify(results || []), { headers: JSON_HEADERS });
 }
 
 async function getPost(id, env) {
-  const row = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
-  if (!row) {
-    return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: JSON_HEADERS });
-  }
-  return new Response(JSON.stringify(row), { headers: JSON_HEADERS });
+    const row = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
+    if (!row) {
+        return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: JSON_HEADERS });
+    }
+    return new Response(JSON.stringify(row), { headers: JSON_HEADERS });
 }
 
 async function createPost(request, env) {
@@ -193,6 +216,7 @@ async function createPost(request, env) {
     platforms = ["fb"],
     scheduledAt,
     status = "scheduled",
+    profileKey = "calgary", // NEW: default profile
   } = body || {};
 
   if (!imageUrl) {
@@ -210,10 +234,34 @@ async function createPost(request, env) {
   const scheduledUnix = typeof scheduledAt === "number" ? scheduledAt : Number(scheduledAt);
 
   await env.DB.prepare(
-    `INSERT INTO posts (id, title, image_url, caption, hashtags, platforms, scheduled_at, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO posts (
+        id,
+        title,
+        image_url,
+        caption,
+        hashtags,
+        platforms,
+        scheduled_at,
+        status,
+        created_at,
+        updated_at,
+        profile_key
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
-    .bind(id, title, imageUrl, caption, hashtags, platformsStr, scheduledUnix, status, now, now)
+    .bind(
+      id,
+      title,
+      imageUrl,
+      caption,
+      hashtags,
+      platformsStr,
+      scheduledUnix,
+      status,
+      now,
+      now,
+      profileKey
+    )
     .run();
 
   const row = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
@@ -244,14 +292,15 @@ async function updatePost(id, request, env) {
         : Number(body.scheduledAt)
       : existing.scheduled_at;
   const status = body.status ?? existing.status;
+  const profileKey = body.profileKey ?? existing.profile_key ?? "calgary";
   const updatedAt = nowUnix();
 
   await env.DB.prepare(
     `UPDATE posts
-     SET title = ?, image_url = ?, caption = ?, hashtags = ?, platforms = ?, scheduled_at = ?, status = ?, updated_at = ?
+     SET title = ?, image_url = ?, caption = ?, hashtags = ?, platforms = ?, scheduled_at = ?, status = ?, updated_at = ?, profile_key = ?
      WHERE id = ?`
   )
-    .bind(title, imageUrl, caption, hashtags, platforms, scheduledAt, status, updatedAt, id)
+    .bind(title, imageUrl, caption, hashtags, platforms, scheduledAt, status, updatedAt, profileKey, id)
     .run();
 
   const row = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
@@ -259,13 +308,27 @@ async function updatePost(id, request, env) {
 }
 
 async function markPostScheduled(id, env) {
+    const existing = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
+    if (!existing) {
+        return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: JSON_HEADERS });
+    }
+
+    await env.DB.prepare("UPDATE posts SET status = ?, updated_at = ? WHERE id = ?")
+        .bind("scheduled", nowUnix(), id)
+        .run();
+
+    const row = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
+    return new Response(JSON.stringify(row), { headers: JSON_HEADERS });
+}
+
+async function cancelPost(id, env) {
   const existing = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
   if (!existing) {
     return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: JSON_HEADERS });
   }
 
   await env.DB.prepare("UPDATE posts SET status = ?, updated_at = ? WHERE id = ?")
-    .bind("scheduled", nowUnix(), id)
+    .bind("cancelled", nowUnix(), id)
     .run();
 
   const row = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
@@ -278,28 +341,27 @@ async function markPostScheduled(id, env) {
  */
 
 async function generateCaption(request, env) {
-  const apiKey = env.OPENAI_API_KEY || env.OPENAI_KEY || env.OPENAI_TOKEN;
+    const apiKey = env.OPENAI_API_KEY || env.OPENAI_KEY || env.OPENAI_TOKEN;
 
-  if (!apiKey) {
-    return new Response(
-      JSON.stringify({ error: "OPENAI_API_KEY not set (tried OPENAI_API_KEY/OPENAI_KEY/OPENAI_TOKEN)" }),
-      {
-        status: 400,
-        headers: JSON_HEADERS,
-      }
-    );
-  }
+    if (!apiKey) {
+        return new Response(
+            JSON.stringify({ error: "OPENAI_API_KEY not set (tried OPENAI_API_KEY/OPENAI_KEY/OPENAI_TOKEN)" }), {
+                status: 400,
+                headers: JSON_HEADERS,
+            }
+        );
+    }
 
-  const body = await request.json();
-  const { prompt = "", tone = "friendly", platform = "both" } = body || {};
-  const apiBase = cleanBaseUrl(env.OPENAI_API_BASE, "https://api.openai.com");
-  const model = env.OPENAI_MODEL || "gpt-4o-mini";
+    const body = await request.json();
+    const { prompt = "", tone = "friendly", platform = "both" } = body || {};
+    const apiBase = cleanBaseUrl(env.OPENAI_API_BASE, "https://api.openai.com");
+    const model = env.OPENAI_MODEL || "gpt-4o-mini";
 
-  const systemPrompt =
-    "You are a social media copywriter for a home-improvement company (popcorn ceiling removal, drywall, painting)." +
-    " Write natural, human captions that sound like a real contractor, not a robot.";
+    const systemPrompt =
+        "You are a social media copywriter for a home-improvement company (popcorn ceiling removal, drywall, painting)." +
+        " Write natural, human captions that sound like a real contractor, not a robot.";
 
-  const userPrompt = `
+    const userPrompt = `
 Create ONE caption for ${platform === "both" ? "Facebook AND Instagram" : platform === "fb" ? "Facebook" : "Instagram"}.
 
 Details:
@@ -313,46 +375,46 @@ Rules:
 - No emojis overload: 2–4 max, keep it clean.
 `;
 
-  const payload = {
-    model,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ],
-    temperature: 0.8,
-  };
+    const payload = {
+        model,
+        messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+        ],
+        temperature: 0.8,
+    };
 
-  let res;
-  try {
-    res = await fetch(`${apiBase}/v1/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-  } catch (err) {
-    console.error("OpenAI network error", err);
-    return new Response(JSON.stringify({ error: `OpenAI network error: ${err.message || err}` }), {
-      status: 500,
-      headers: JSON_HEADERS,
-    });
-  }
+    let res;
+    try {
+        res = await fetch(`${apiBase}/v1/chat/completions`, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+        });
+    } catch (err) {
+        console.error("OpenAI network error", err);
+        return new Response(JSON.stringify({ error: `OpenAI network error: ${err.message || err}` }), {
+            status: 500,
+            headers: JSON_HEADERS,
+        });
+    }
 
-  if (!res.ok) {
-    const errorText = await res.text();
-    console.error("OpenAI error", res.status, errorText);
-    return new Response(JSON.stringify({ error: `OpenAI API error ${res.status}`, detail: errorText }), {
-      status: 500,
-      headers: JSON_HEADERS,
-    });
-  }
+    if (!res.ok) {
+        const errorText = await res.text();
+        console.error("OpenAI error", res.status, errorText);
+        return new Response(JSON.stringify({ error: `OpenAI API error ${res.status}`, detail: errorText }), {
+            status: 500,
+            headers: JSON_HEADERS,
+        });
+    }
 
-  const data = await res.json();
-  const text = data?.choices?.[0]?.message?.content?.trim() ?? "";
+    const data = await res.json();
+    const text = data?.choices?.[0]?.message?.content?.trim() ?? "";
 
-  return new Response(JSON.stringify({ text }), { headers: JSON_HEADERS });
+    return new Response(JSON.stringify({ text }), { headers: JSON_HEADERS });
 }
 
 /**
@@ -384,11 +446,14 @@ async function runScheduler(env) {
         .map((p) => p.trim())
         .filter(Boolean);
 
+      const profileKey = post.profile_key || "calgary";
+      const profileConfig = getProfileConfig(env, profileKey);
+
       if (platforms.includes("fb")) {
-        await publishToFacebook(post, env);
+        await publishToFacebook(post, env, profileConfig);
       }
       if (platforms.includes("ig")) {
-        await publishToInstagram(post, env);
+        await publishToInstagram(post, env, profileConfig);
       }
 
       await env.DB.prepare(
@@ -412,49 +477,49 @@ async function runScheduler(env) {
  * Returns: { key, url }
  */
 async function handleUpload(request, env) {
-  if (!env.MEDIA_BUCKET) {
-    return new Response(JSON.stringify({ error: "MEDIA_BUCKET not configured" }), {
-      status: 500,
-      headers: JSON_HEADERS,
+    if (!env.MEDIA_BUCKET) {
+        return new Response(JSON.stringify({ error: "MEDIA_BUCKET not configured" }), {
+            status: 500,
+            headers: JSON_HEADERS,
+        });
+    }
+
+    let formData;
+    try {
+        formData = await request.formData();
+    } catch (err) {
+        console.error("Error parsing formData in /api/upload:", err);
+        return new Response(JSON.stringify({ error: "Invalid form data" }), {
+            status: 400,
+            headers: JSON_HEADERS,
+        });
+    }
+
+    const file = formData.get("file");
+    if (!file || typeof file === "string") {
+        return new Response(JSON.stringify({ error: "Missing file field" }), {
+            status: 400,
+            headers: JSON_HEADERS,
+        });
+    }
+
+    const originalName = file.name || "upload";
+    const safeName = originalName.replace(/[^a-zA-Z0-9._-]+/g, "_");
+    const key = `${crypto.randomUUID()}-${safeName}`;
+
+    await env.MEDIA_BUCKET.put(key, file.stream(), {
+        httpMetadata: {
+            contentType: file.type || "application/octet-stream",
+        },
     });
-  }
 
-  let formData;
-  try {
-    formData = await request.formData();
-  } catch (err) {
-    console.error("Error parsing formData in /api/upload:", err);
-    return new Response(JSON.stringify({ error: "Invalid form data" }), {
-      status: 400,
-      headers: JSON_HEADERS,
+    const base = new URL(request.url).origin;
+    const url = `${base}/media/${encodeURIComponent(key)}`;
+
+    return new Response(JSON.stringify({ key, url }), {
+        status: 201,
+        headers: JSON_HEADERS,
     });
-  }
-
-  const file = formData.get("file");
-  if (!file || typeof file === "string") {
-    return new Response(JSON.stringify({ error: "Missing file field" }), {
-      status: 400,
-      headers: JSON_HEADERS,
-    });
-  }
-
-  const originalName = file.name || "upload";
-  const safeName = originalName.replace(/[^a-zA-Z0-9._-]+/g, "_");
-  const key = `${crypto.randomUUID()}-${safeName}`;
-
-  await env.MEDIA_BUCKET.put(key, file.stream(), {
-    httpMetadata: {
-      contentType: file.type || "application/octet-stream",
-    },
-  });
-
-  const base = new URL(request.url).origin;
-  const url = `${base}/media/${encodeURIComponent(key)}`;
-
-  return new Response(JSON.stringify({ key, url }), {
-    status: 201,
-    headers: JSON_HEADERS,
-  });
 }
 
 /**
@@ -462,25 +527,25 @@ async function handleUpload(request, env) {
  * GET /media/:key
  */
 async function serveMedia(pathname, env) {
-  if (!env.MEDIA_BUCKET) {
-    return new Response("MEDIA_BUCKET not configured", { status: 500 });
-  }
+    if (!env.MEDIA_BUCKET) {
+        return new Response("MEDIA_BUCKET not configured", { status: 500 });
+    }
 
-  const key = decodeURIComponent(pathname.replace(/^\/media\//, ""));
-  if (!key) {
-    return new Response("Missing key", { status: 400 });
-  }
+    const key = decodeURIComponent(pathname.replace(/^\/media\//, ""));
+    if (!key) {
+        return new Response("Missing key", { status: 400 });
+    }
 
-  const object = await env.MEDIA_BUCKET.get(key);
-  if (!object) {
-    return new Response("Not found", { status: 404 });
-  }
+    const object = await env.MEDIA_BUCKET.get(key);
+    if (!object) {
+        return new Response("Not found", { status: 404 });
+    }
 
-  const headers = new Headers();
-  object.writeHttpMetadata(headers);
-  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+    const headers = new Headers();
+    object.writeHttpMetadata(headers);
+    headers.set("Cache-Control", "public, max-age=31536000, immutable");
 
-  return new Response(object.body, { headers });
+    return new Response(object.body, { headers });
 }
 
 /**
@@ -499,90 +564,222 @@ function getGraphConfig(env) {
   return { version, base };
 }
 
-async function publishToFacebook(post, env) {
-  const { version, base } = getGraphConfig(env);
-  const pageId = env.META_PAGE_ID;
-  const token = env.META_PAGE_ACCESS_TOKEN;
-
-  if (!pageId || !token) {
-    throw new Error("META_PAGE_ID or META_PAGE_ACCESS_TOKEN not configured");
+function getProfileConfig(env, profileKey) {
+  // Default: Calgary (uses your existing env vars)
+  if (!profileKey || profileKey === "calgary") {
+    return {
+      fbPageId: env.META_PAGE_ID, // 807570945780920
+      fbToken: env.META_PAGE_ACCESS_TOKEN,
+      igUserId: env.META_IG_USER_ID, // 17841477810663121
+      igToken: env.META_IG_ACCESS_TOKEN,
+    };
   }
 
-  const caption = buildCaption(post);
+  if (profileKey === "epf") {
+    return {
+      fbPageId: env.META_PAGE_ID_EPF,
+      fbToken: env.META_PAGE_ACCESS_TOKEN_EPF,
+      igUserId: env.META_IG_USER_ID_EPF,
+      igToken: env.META_IG_ACCESS_TOKEN_EPF,
+    };
+  }
 
-  const endpoint = `${base}/${version}/${pageId}/photos`;
-  const body = new URLSearchParams({
-    url: post.image_url,
-    caption,
-    access_token: token,
-  });
+  if (profileKey === "wallpaper") {
+    return {
+      fbPageId: env.META_PAGE_ID_WALLPAPER,
+      fbToken: env.META_PAGE_ACCESS_TOKEN_WALLPAPER,
+      igUserId: env.META_IG_USER_ID_WALLPAPER,
+      igToken: env.META_IG_ACCESS_TOKEN_WALLPAPER,
+    };
+  }
 
-  const res = await fetch(endpoint, {
+  // Fallback to Calgary if unknown key
+  return {
+    fbPageId: env.META_PAGE_ID,
+    fbToken: env.META_PAGE_ACCESS_TOKEN,
+    igUserId: env.META_IG_USER_ID,
+    igToken: env.META_IG_ACCESS_TOKEN,
+  };
+}
+
+async function publishToFacebook(post, env, profileConfig) {
+  const pageId = profileConfig.fbPageId;
+  const token = profileConfig.fbToken;
+
+  console.log("FB publish using PAGE_ID", pageId, "token prefix", token?.slice(0, 10));
+
+  if (!pageId || !token) {
+    console.warn("META_PAGE_ID or META_PAGE_ACCESS_TOKEN missing for this profile, skipping FB publish");
+    return { ok: false, error: "fb_config_missing" };
+  }
+
+  const message = [post.caption || "", post.hashtags || ""]
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+
+  // IMPORTANT: Page endpoint, not /me
+  const url = `https://graph.facebook.com/v19.0/${pageId}/photos`;
+
+  const body = new URLSearchParams();
+  body.set("url", post.image_url); // must be public URL
+  if (message) body.set("caption", message);
+  body.set("access_token", token);
+
+  const res = await fetch(url, {
     method: "POST",
     body,
   });
 
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`Facebook API error ${res.status}: ${text}`);
+    console.error("Facebook publish error:", res.status, text);
+    return { ok: false, error: "fb_error", detail: text };
   }
 
-  console.log("Published FB photo for post", post.id, text);
+  console.log("Facebook publish OK:", text);
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = { raw: text };
+  }
+
+  return { ok: true, data };
 }
 
-async function publishToInstagram(post, env) {
-  const { version, base } = getGraphConfig(env);
-  const igUserId = env.META_IG_USER_ID;
-  const token = env.META_IG_ACCESS_TOKEN || env.META_PAGE_ACCESS_TOKEN;
+async function publishToInstagram(post, env, profileConfig) {
+  const igUserId = profileConfig.igUserId;
+  const token = profileConfig.igToken;
+
+  console.log(
+    "IG publish using IG_USER_ID",
+    igUserId,
+    "token prefix",
+    token?.slice(0, 10),
+    "image_url",
+    post.image_url
+  );
 
   if (!igUserId || !token) {
-    throw new Error("META_IG_USER_ID or META_IG_ACCESS_TOKEN/PAGE_ACCESS_TOKEN not configured");
+    console.warn("META_IG_USER_ID or META_IG_ACCESS_TOKEN missing for this profile, skipping IG publish");
+    return { ok: false, error: "ig_config_missing" };
   }
 
-  const caption = buildCaption(post);
+  // 1) Create media container
+  const caption = [post.caption || "", post.hashtags || ""]
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
 
-  // Step 1: create media container
-  const mediaEndpoint = `${base}/${version}/${igUserId}/media`;
-  const mediaBody = new URLSearchParams({
-    image_url: post.image_url,
-    caption,
-    access_token: token,
-  });
+  const createUrl = `https://graph.facebook.com/v19.0/${igUserId}/media`;
 
-  const mediaRes = await fetch(mediaEndpoint, {
+  const createParams = new URLSearchParams();
+  createParams.set("image_url", post.image_url); // must be public HTTPS
+  if (caption) createParams.set("caption", caption);
+  createParams.set("access_token", token);
+
+  const createRes = await fetch(createUrl, {
     method: "POST",
-    body: mediaBody,
+    body: createParams,
   });
 
-  const mediaText = await mediaRes.text();
-  if (!mediaRes.ok) {
-    throw new Error(`IG media error ${mediaRes.status}: ${mediaText}`);
+  const createText = await createRes.text();
+  if (!createRes.ok) {
+    console.error("IG media create error:", createRes.status, createText);
+    return { ok: false, error: "ig_create_error", detail: createText };
   }
 
-  let creationId;
+  let createData;
   try {
-    const parsed = JSON.parse(mediaText);
-    creationId = parsed.id;
+    createData = JSON.parse(createText);
   } catch {
-    throw new Error(`IG media response parse error: ${mediaText}`);
+    createData = { raw: createText };
   }
 
-  // Step 2: publish container
-  const publishEndpoint = `${base}/${version}/${igUserId}/media_publish`;
-  const publishBody = new URLSearchParams({
-    creation_id: creationId,
-    access_token: token,
-  });
+  const creationId = createData.id;
+  console.log("IG media container created:", creationId);
 
-  const publishRes = await fetch(publishEndpoint, {
+  if (!creationId) {
+    console.error("IG media container has no id:", createData);
+    return { ok: false, error: "ig_no_creation_id", detail: createData };
+  }
+
+  // 2) Poll status_code until FINISHED or ERROR (with small waits)
+  const statusUrl = `https://graph.facebook.com/v19.0/${creationId}?fields=status_code&access_token=${encodeURIComponent(
+    token
+  )}`;
+
+  let statusCode = "IN_PROGRESS";
+  const maxAttempts = 5;
+  const delayMs = 2000;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const statusRes = await fetch(statusUrl);
+    const statusText = await statusRes.text();
+
+    if (!statusRes.ok) {
+      console.error("IG status check error:", statusRes.status, statusText);
+      return { ok: false, error: "ig_status_error", detail: statusText };
+    }
+
+    let statusData;
+    try {
+      statusData = JSON.parse(statusText);
+    } catch {
+      statusData = { raw: statusText };
+    }
+
+    statusCode = statusData.status_code || "UNKNOWN";
+    console.log(`IG status attempt ${attempt}:`, statusCode);
+
+    if (statusCode === "FINISHED") {
+      break;
+    }
+
+    if (statusCode === "ERROR") {
+      console.error("IG media processing error:", statusData);
+      return { ok: false, error: "ig_media_error", detail: statusData };
+    }
+
+    if (attempt < maxAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
+  if (statusCode !== "FINISHED") {
+    console.warn("IG media not finished after polling, will try again later:", {
+      creationId,
+      statusCode,
+    });
+    return { ok: false, error: "ig_not_ready", creationId, statusCode };
+  }
+
+  // 3) Publish the media
+  const publishUrl = `https://graph.facebook.com/v19.0/${igUserId}/media_publish`;
+
+  const publishParams = new URLSearchParams();
+  publishParams.set("creation_id", creationId);
+  publishParams.set("access_token", token);
+
+  const publishRes = await fetch(publishUrl, {
     method: "POST",
-    body: publishBody,
+    body: publishParams,
   });
 
   const publishText = await publishRes.text();
   if (!publishRes.ok) {
-    throw new Error(`IG publish error ${publishRes.status}: ${publishText}`);
+    console.error("IG publish error:", publishRes.status, publishText);
+    return { ok: false, error: "ig_publish_error", detail: publishText };
   }
 
-  console.log("Published IG media for post", post.id, publishText);
+  console.log("IG publish OK:", publishText);
+  let publishData;
+  try {
+    publishData = JSON.parse(publishText);
+  } catch {
+    publishData = { raw: publishText };
+  }
+
+  return { ok: true, data: publishData };
 }
