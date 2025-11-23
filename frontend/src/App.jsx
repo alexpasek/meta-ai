@@ -3,6 +3,34 @@ import React, { useState, useEffect } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
+const PROFILE_CONFIG = {
+  calgary: {
+    key: "calgary",
+    label: "Calgary – Popcorn Ceiling Removal",
+    city: "Calgary",
+    seoLocation: "Calgary and nearby areas",
+    website: "https://popcornceilingremovalcalgary.com",
+    brand: "Popcorn Ceiling Removal Calgary",
+  },
+  epf: {
+    key: "epf",
+    label: "EPF Pro Services (GTA)",
+    city: "Mississauga / GTA",
+    seoLocation: "Mississauga, Oakville, Burlington, Hamilton and the GTA",
+    website: "https://epfproservices.com",
+    brand: "EPF Pro Services",
+  },
+  wallpaper: {
+    key: "wallpaper",
+    label: "Wallpaper Removal Pro",
+    city: "Toronto / GTA",
+    seoLocation: "Toronto and the GTA",
+    // TODO: change this to your real wallpaper site if different
+    website: "https://wallpaperremovalpro.com",
+    brand: "Wallpaper Removal Pro",
+  },
+};
+
 function toUnixSeconds(value) {
   if (!value) return null;
   return Math.floor(new Date(value).getTime() / 1000);
@@ -20,11 +48,44 @@ function fromUnixSeconds(value) {
   return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
 }
 
+function formatDateTimeLocal(date) {
+  const d = new Date(date);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const mm = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const min = pad(d.getMinutes());
+  return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+}
+
 function App() {
   const [files, setFiles] = useState([]);
   const [scheduledPosts, setScheduledPosts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [cancelingId, setCancelingId] = useState(null);
+  const [postingId, setPostingId] = useState(null);
+  const [autoStart, setAutoStart] = useState("");
+  const [autoInterval, setAutoInterval] = useState("1"); // days between posts
+  const [bulkCaptionLoading, setBulkCaptionLoading] = useState(false);
+  const [removingId, setRemovingId] = useState(null);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [hidePosted, setHidePosted] = useState(false);
+  const [openLogId, setOpenLogId] = useState(null);
+
+  const profileLatest = React.useMemo(() => {
+    const latest = {};
+    for (const post of scheduledPosts) {
+      // Only consider scheduled (future) posts for the “queue”
+      if (post.status !== "scheduled") continue;
+      const key = post.profile_key || "default";
+      if (!latest[key] || post.scheduled_at > latest[key]) {
+        latest[key] = post.scheduled_at;
+      }
+    }
+    return latest;
+  }, [scheduledPosts]);
 
   useEffect(() => {
     loadScheduled();
@@ -61,15 +122,38 @@ function App() {
     setFiles((prev) => prev.map((f) => (f.id === id ? { ...f, ...patch } : f)));
   }
 
+  function handleRemoveDraft(id) {
+    setFiles((prev) => prev.filter((f) => f.id !== id));
+  }
+
   async function handleGenerateCaption(draft) {
     try {
       updateDraft(draft.id, { aiLoading: true, aiError: "" });
-      const prompt = `Photo description: ${draft.file.name}. Service: popcorn ceiling removal / drywall / painting in Calgary or GTA.`;
+
+      const profileCfg = PROFILE_CONFIG[draft.profileKey] || PROFILE_CONFIG.calgary;
+
+      const prompt = `
+Photo description: ${draft.file?.name || "project image"}.
+Brand: ${profileCfg.brand}.
+Website: ${profileCfg.website}.
+Local SEO focus: ${profileCfg.seoLocation}.
+City/area to target in the copy: ${profileCfg.city}.
+This post is for the "${profileCfg.label}" profile.
+
+Write a unique, human caption that is optimized for local homeowners searching for popcorn ceiling removal, drywall and painting in this area.
+Mention the city/area naturally and invite people to get a quote or visit the website.
+`;
+
       const res = await fetch(`${API_BASE}/api/ai/caption`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, platform: "both" }),
+        body: JSON.stringify({
+          prompt,
+          platform: "both",
+          profile: draft.profileKey, // calgary / epf / wallpaper
+        }),
       });
+
       const data = await res.json();
 
       if (!res.ok || data.error || !data.text) {
@@ -87,6 +171,21 @@ function App() {
       updateDraft(draft.id, { aiError: err?.message || "AI caption failed" });
     } finally {
       updateDraft(draft.id, { aiLoading: false });
+    }
+  }
+
+  async function handleAutoCaptionAll() {
+    if (!files.length) {
+      alert("No drafts to caption.");
+      return;
+    }
+    setBulkCaptionLoading(true);
+    try {
+      for (const draft of files) {
+        await handleGenerateCaption(draft);
+      }
+    } finally {
+      setBulkCaptionLoading(false);
     }
   }
 
@@ -176,10 +275,69 @@ function App() {
     );
   }
 
+  function handleAutoSpread() {
+    if (!files.length) {
+      alert("No drafts to schedule yet.");
+      return;
+    }
+
+    const intervalDays = Number(autoInterval) || 1;
+    const msPerDay = 24 * 60 * 60 * 1000;
+
+    setFiles((prev) => {
+      // Group drafts by profile
+      const grouped = {};
+      for (const draft of prev) {
+        const key = draft.profileKey || "default";
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(draft);
+      }
+
+      const updatedById = {};
+
+      for (const [profileKey, draftsForProfile] of Object.entries(grouped)) {
+        let baseDate;
+
+        if (autoStart) {
+          baseDate = new Date(autoStart);
+        } else {
+          const last = profileLatest[profileKey];
+          if (last) {
+            baseDate = new Date(last * 1000 + intervalDays * msPerDay);
+          } else {
+            baseDate = new Date();
+          }
+        }
+
+        draftsForProfile.forEach((draft, index) => {
+          const pairIndex = Math.floor(index / 2);
+          const isFb = index % 2 === 0;
+
+          const dt = new Date(baseDate.getTime() + pairIndex * intervalDays * msPerDay);
+          if (!isFb) {
+            dt.setHours(dt.getHours() + 3);
+          }
+
+          updatedById[draft.id] = {
+            ...draft,
+            scheduledLocal: formatDateTimeLocal(dt),
+            platforms: isFb ? ["fb"] : ["ig"],
+          };
+        });
+      }
+
+      return prev.map((d) => updatedById[d.id] || d);
+    });
+  }
+
   async function handleCancel(id) {
     setCancelingId(id);
     try {
-      const res = await fetch(`${API_BASE}/api/posts/${id}/cancel`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/posts/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "cancelled" }),
+      });
       if (!res.ok) {
         throw new Error(`Cancel failed (${res.status})`);
       }
@@ -189,6 +347,49 @@ function App() {
       alert(err?.message || "Failed to cancel post");
     } finally {
       setCancelingId(null);
+    }
+  }
+
+  async function handlePostNow(id) {
+    setPostingId(id);
+    try {
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      // Move scheduled_at to now and ensure status is scheduled, then trigger scheduler
+      const res = await fetch(`${API_BASE}/api/posts/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scheduledAt: nowSeconds, status: "scheduled" }),
+      });
+      if (!res.ok) {
+        throw new Error(`Post-now update failed (${res.status})`);
+      }
+      await fetch(`${API_BASE}/api/scheduler/run`, { method: "POST" });
+      await loadScheduled();
+    } catch (err) {
+      console.error("Post now error", err);
+      alert(err?.message || "Failed to publish now");
+    } finally {
+      setPostingId(null);
+    }
+  }
+
+  async function handleRemove(id) {
+    setRemovingId(id);
+    try {
+      const res = await fetch(`${API_BASE}/api/posts/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "archived" }),
+      });
+      if (!res.ok) {
+        throw new Error(`Remove failed (${res.status})`);
+      }
+      await loadScheduled();
+    } catch (err) {
+      console.error("Remove error", err);
+      alert(err?.message || "Failed to remove post");
+    } finally {
+      setRemovingId(null);
     }
   }
 
@@ -209,16 +410,57 @@ function App() {
             multiple
             onChange={handleFilesSelected}
           />
+          <div className="auto-spread">
+            <h3>Auto schedule</h3>
+            <p className="muted">
+              Auto-fill times for all drafts. 1 photo = 1 content day, even if it goes to both Facebook and Instagram.
+            </p>
+            <div className="auto-spread-row">
+              <label className="field">
+                <span>Start date &amp; time</span>
+                <input
+                  type="datetime-local"
+                  value={autoStart}
+                  onChange={(e) => setAutoStart(e.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Frequency</span>
+                <select
+                  value={autoInterval}
+                  onChange={(e) => setAutoInterval(e.target.value)}
+                >
+                  <option value="1">Every day</option>
+                  <option value="2">Every 2 days</option>
+                  <option value="3">Every 3 days</option>
+                </select>
+              </label>
+            </div>
+            <button
+              type="button"
+              className="secondary"
+              onClick={handleAutoSpread}
+            >
+              Apply auto schedule to drafts
+            </button>
+          </div>
           {files.length > 0 && (
             <div className="draft-grid">
               {files.map((draft) => (
                 <div key={draft.id} className="draft-card">
                   <img src={draft.previewUrl} alt={draft.file.name} className="draft-image" />
-                  <div className="draft-body">
-                    <div className="draft-row">
-                      <span className="draft-title">{draft.file.name}</span>
-                      <span className="draft-status">{draft.status}</span>
-                    </div>
+                    <div className="draft-body">
+                      <div className="draft-row">
+                        <span className="draft-title">{draft.file.name}</span>
+                        <span className="draft-status">{draft.status}</span>
+                        <button
+                          type="button"
+                          className="link-button"
+                          onClick={() => handleRemoveDraft(draft.id)}
+                        >
+                          Remove
+                        </button>
+                      </div>
                     <label className="field">
                       <span>Caption + hashtags</span>
                       <textarea
@@ -250,6 +492,13 @@ function App() {
                     </div>
                     <label className="field">
                       <span>Profile</span>
+                      <details className="help-tip">
+                        <summary aria-label="Profile help">?</summary>
+                        <div className="help-text">
+                          Select which brand account to use. Calgary uses the default page/IG token, while EPF and Wallpaper use their
+                          own tokens.
+                        </div>
+                      </details>
                       <select
                         value={draft.profileKey}
                         onChange={(e) => updateDraft(draft.id, { profileKey: e.target.value })}
@@ -283,57 +532,221 @@ function App() {
             </div>
           )}
           {files.length > 0 && (
-            <button
-              className="primary"
-              type="button"
-              onClick={handleSaveSchedules}
-              disabled={loading}
-            >
-              {loading ? "Saving..." : "Save & send to scheduler"}
-            </button>
+            <div className="bulk-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={handleAutoCaptionAll}
+                disabled={bulkCaptionLoading}
+              >
+                {bulkCaptionLoading ? "Captioning..." : "AI captions for all drafts"}
+              </button>
+              <button
+                className="primary"
+                type="button"
+                onClick={handleSaveSchedules}
+                disabled={loading}
+              >
+                {loading ? "Saving..." : "Save & send to scheduler"}
+              </button>
+            </div>
           )}
         </section>
 
         <section className="card">
           <h2>2. Queue / calendar (from D1)</h2>
           <p>These posts are stored in your D1 DB and picked up by the Worker Cron when time comes.</p>
+          {Object.keys(profileLatest).length > 0 && (
+            <div className="profile-summary">
+              <strong>Scheduled until:</strong>
+              <ul>
+                {"calgary" in profileLatest && (
+                  <li>
+                    Calgary – Popcorn Ceiling Removal:&nbsp;
+                    {fromUnixSeconds(profileLatest["calgary"])}
+                  </li>
+                )}
+                {"epf" in profileLatest && (
+                  <li>
+                    EPF Pro Services:&nbsp;
+                    {fromUnixSeconds(profileLatest["epf"])}
+                  </li>
+                )}
+                {"wallpaper" in profileLatest && (
+                  <li>
+                    Wallpaper Removal Pro:&nbsp;
+                    {fromUnixSeconds(profileLatest["wallpaper"])}
+                  </li>
+                )}
+                {Object.keys(profileLatest)
+                  .filter((k) => !["calgary", "epf", "wallpaper"].includes(k))
+                  .map((k) => (
+                    <li key={k}>
+                      {k}: {fromUnixSeconds(profileLatest[k])}
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
+          <div className="queue-controls">
+            <div className="filter-group">
+              <label>
+                Status:
+                <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+                  <option value="all">All</option>
+                  <option value="scheduled">Scheduled</option>
+                  <option value="published">Published</option>
+                  <option value="failed">Failed</option>
+                  <option value="cancelled">Cancelled</option>
+                  <option value="archived">Archived</option>
+                </select>
+              </label>
+              <label className="inline-check">
+                <input
+                  type="checkbox"
+                  checked={hidePosted}
+                  onChange={(e) => setHidePosted(e.target.checked)}
+                />
+                Hide published
+              </label>
+            </div>
+          </div>
           {scheduledPosts.length === 0 ? (
             <p className="muted">No posts in queue yet.</p>
           ) : (
             <div className="scheduled-list">
-              {scheduledPosts.map((post) => (
-                <div key={post.id} className="scheduled-row">
-                  <div>
-                    <div className="scheduled-title">{post.title || "Untitled"}</div>
-                    <div className="scheduled-meta">
-                      <span>{(post.platforms || "").toUpperCase()}</span>
-                      <span>at {fromUnixSeconds(post.scheduled_at)}</span>
-                      <span className="text-xs px-2 py-0.5 rounded bg-slate-100">
-                        {post.profile_key === "calgary"
-                          ? "Calgary"
-                          : post.profile_key === "epf"
-                          ? "EPF"
-                          : post.profile_key === "wallpaper"
-                          ? "Wallpaper"
-                          : post.profile_key || "Default"}
-                      </span>
+              {scheduledPosts
+                .filter((post) => {
+                  if (hidePosted && post.status === "published") return false;
+                  if (statusFilter === "all") return post.status !== "archived";
+                  return post.status === statusFilter;
+                })
+                .map((post) => (
+                  <div key={post.id} className="scheduled-row-outer">
+                    <div className="scheduled-row">
+                      <div>
+                        <div className="scheduled-title">{post.title || "Untitled"}</div>
+                        <div className="scheduled-meta">
+                          <span>{(post.platforms || "").toUpperCase()}</span>
+                          <span>at {fromUnixSeconds(post.scheduled_at)}</span>
+                          <span className="text-xs px-2 py-0.5 rounded bg-slate-100">
+                            {post.profile_key === "calgary"
+                              ? "Calgary"
+                              : post.profile_key === "epf"
+                              ? "EPF"
+                              : post.profile_key === "wallpaper"
+                              ? "Wallpaper"
+                              : post.profile_key || "Default"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="scheduled-right">
+                        <div className={`badge ${post.status}`}>{post.status}</div>
+
+                        <div className="action-row">
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => setOpenLogId(openLogId === post.id ? null : post.id)}
+                          >
+                            {openLogId === post.id ? "Hide log" : "View log"}
+                          </button>
+                          <button
+                            type="button"
+                            className="danger"
+                            onClick={() => handleRemove(post.id)}
+                            disabled={removingId === post.id}
+                          >
+                            {removingId === post.id ? "Removing..." : "Remove"}
+                          </button>
+                        </div>
+
+                        {post.status === "scheduled" && (
+                          <div className="scheduled-actions">
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() => handlePostNow(post.id)}
+                              disabled={postingId === post.id}
+                            >
+                              {postingId === post.id ? "Posting..." : "Post now"}
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() => handleCancel(post.id)}
+                              disabled={cancelingId === post.id}
+                            >
+                              {cancelingId === post.id ? "Cancelling..." : "Cancel"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
+
+                    {openLogId === post.id && (
+                      <div className="log-panel">
+                        <pre>{post.log || post.error || "No log recorded yet for this post."}</pre>
+                      </div>
+                    )}
                   </div>
-                  <div className={`badge ${post.status}`}>{post.status}</div>
-                  {post.status === "scheduled" && (
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={() => handleCancel(post.id)}
-                      disabled={cancelingId === post.id}
-                    >
-                      {cancelingId === post.id ? "Cancelling..." : "Cancel"}
-                    </button>
-                  )}
-                </div>
-              ))}
+                ))}
             </div>
           )}
+        </section>
+
+        <section className="card">
+          <h2>3. Token helper (manual)</h2>
+          <p className="muted">
+            When Facebook or Instagram tokens expire, use these tools to generate new tokens
+            and then update your Worker secrets via the terminal.
+          </p>
+          <details className="help-tip">
+            <summary aria-label="Token help">?</summary>
+            <div className="help-text">
+              Use Graph Explorer to generate tokens, then validate them in Access Token Debugger and update your Worker secrets.
+            </div>
+          </details>
+          <div className="token-instructions">
+            <ol>
+              <li>Open Graph Explorer, pick your app, and click Get User Access Token with required scopes.</li>
+              <li>Extend to a long-lived user token (info icon → Access Token Debugger → Extend).</li>
+              <li>In Graph Explorer, call /me/accounts with the long-lived token; copy the Page token for each profile.</li>
+              <li>Validate each Page/IG token in Access Token Debugger (check validity and scopes).</li>
+              <li>In a terminal, from backend/, run:
+                <pre>
+npx wrangler secret put META_PAGE_ACCESS_TOKEN
+npx wrangler secret put META_IG_ACCESS_TOKEN
+npx wrangler secret put META_PAGE_ACCESS_TOKEN_EPF
+npx wrangler secret put META_IG_ACCESS_TOKEN_EPF
+npx wrangler secret put META_PAGE_ACCESS_TOKEN_WALLPAPER
+npx wrangler secret put META_IG_ACCESS_TOKEN_WALLPAPER
+                </pre>
+              </li>
+              <li>If IDs changed, also set META_PAGE_ID / META_IG_USER_ID and the EPF/WALLPAPER variants, then deploy:
+                <pre>npx wrangler deploy</pre>
+              </li>
+            </ol>
+          </div>
+          <div className="token-buttons">
+            <a
+              href="https://developers.facebook.com/tools/explorer/"
+              target="_blank"
+              rel="noreferrer"
+              className="secondary"
+            >
+              Open Graph Explorer
+            </a>
+            <a
+              href="https://developers.facebook.com/tools/debug/accesstoken/"
+              target="_blank"
+              rel="noreferrer"
+              className="secondary"
+            >
+              Access Token Debugger
+            </a>
+          </div>
         </section>
       </main>
     </div>

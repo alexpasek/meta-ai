@@ -37,7 +37,8 @@ async function ensureSchema(env) {
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         published_at INTEGER,
-        error TEXT
+        error TEXT,
+        log TEXT
       )`
     ).run();
 
@@ -55,6 +56,14 @@ async function ensureSchema(env) {
     await env.DB.prepare(
       "CREATE INDEX IF NOT EXISTS idx_posts_status_scheduled ON posts (status, scheduled_at)"
     ).run();
+
+    // Try to add a 'log' column for per-post logs (safe if it already exists)
+    try {
+      await env.DB.prepare("ALTER TABLE posts ADD COLUMN log TEXT").run();
+    } catch (e) {
+      // If column already exists, SQLite will throw "duplicate column name", ignore it
+      // console.log("log column exists or cannot be added:", e.message);
+    }
 
     schemaReady = true;
     schemaCheckPromise = null;
@@ -341,80 +350,115 @@ async function cancelPost(id, env) {
  */
 
 async function generateCaption(request, env) {
-    const apiKey = env.OPENAI_API_KEY || env.OPENAI_KEY || env.OPENAI_TOKEN;
+  const apiKey = env.OPENAI_API_KEY || env.OPENAI_KEY || env.OPENAI_TOKEN;
 
-    if (!apiKey) {
-        return new Response(
-            JSON.stringify({ error: "OPENAI_API_KEY not set (tried OPENAI_API_KEY/OPENAI_KEY/OPENAI_TOKEN)" }), {
-                status: 400,
-                headers: JSON_HEADERS,
-            }
-        );
-    }
+  if (!apiKey) {
+    return new Response(
+      JSON.stringify({ error: "OPENAI_API_KEY not set (tried OPENAI_API_KEY/OPENAI_KEY/OPENAI_TOKEN)" }),
+      {
+        status: 400,
+        headers: JSON_HEADERS,
+      }
+    );
+  }
 
-    const body = await request.json();
-    const { prompt = "", tone = "friendly", platform = "both" } = body || {};
-    const apiBase = cleanBaseUrl(env.OPENAI_API_BASE, "https://api.openai.com");
-    const model = env.OPENAI_MODEL || "gpt-4o-mini";
+  const body = await request.json();
+  const { prompt = "", tone = "friendly", platform = "both", profile = "calgary" } = body || {};
 
-    const systemPrompt =
-        "You are a social media copywriter for a home-improvement company (popcorn ceiling removal, drywall, painting)." +
-        " Write natural, human captions that sound like a real contractor, not a robot.";
+  const apiBase = cleanBaseUrl(env.OPENAI_API_BASE, "https://api.openai.com");
+  const model = env.OPENAI_MODEL || "gpt-4o-mini";
 
-    const userPrompt = `
-Create ONE caption for ${platform === "both" ? "Facebook AND Instagram" : platform === "fb" ? "Facebook" : "Instagram"}.
+  let profileRules = "";
+  if (profile === "calgary") {
+    profileRules = `
+Local SEO focus:
+- Talk about Calgary homeowners and nearby areas (Airdrie, Chestermere, Okotoks when natural).
+- Include the website "https://popcornceilingremovalcalgary.com" once in a natural way
+  (e.g. "Details at popcornceilingremovalcalgary.com").
+- Use hashtags like #calgary #yyc plus service terms (#popcornceilingremoval #drywall #interiorpainting).
+`;
+  } else if (profile === "epf") {
+    profileRules = `
+Local SEO focus:
+- Talk about Mississauga, Oakville, Burlington, Hamilton and the GTA.
+- Include the website "https://epfproservices.com" once in a natural way.
+- Use hashtags with city + GTA + services (e.g. #mississauga #oakville #gta #popcornceilingremoval #interiorpainting).
+`;
+  } else if (profile === "wallpaper") {
+    profileRules = `
+Local SEO focus:
+- Wallpaper removal in Toronto / GTA.
+- Mention the brand "Wallpaper Removal Pro" and include the website once (e.g. wallpaperremovalpro.com or your real URL).
+- Use hashtags around wallpaper removal + GTA (e.g. #wallpaperremoval #gtahomes #toronto).
+`;
+  }
+
+  const systemPrompt =
+    "You are a social media copywriter for a home-improvement company (popcorn ceiling removal, drywall, painting, wallpaper removal). " +
+    "Write natural, human captions that sound like a real contractor, not a robot. " +
+    "Make each caption feel unique; vary the hook and structure so it doesn't sound like a copy-paste template.";
+
+  const platformLabel =
+    platform === "both" ? "Facebook AND Instagram" : platform === "fb" ? "Facebook" : "Instagram";
+
+  const userPrompt = `
+Create ONE caption for ${platformLabel}.
 
 Details:
 ${prompt}
 
-Rules:
-- Start with a strong first line that hooks attention.
-- 2–4 short sentences or bullet-style lines.
-- Include a clear call to action (DM or call for quote) but keep it casual.
-- Add 6–10 hashtags at the end, mixing local city/area + service keywords.
-- No emojis overload: 2–4 max, keep it clean.
+Profile-specific SEO rules:
+${profileRules}
+
+Global rules:
+- Start with a strong first line that hooks attention (change your hook style from post to post).
+- 2–4 short sentences or bullet-style lines (easy to read on phones).
+- Include a clear call to action (DM us or visit the website for a quote) but keep it casual and human.
+- Add 6–10 hashtags at the end, focused on local city/area + service keywords.
+- 2–4 emojis max, only if they feel natural.
+- Avoid generic boilerplate like "another happy customer" or "we transformed this space" as the main line; be more specific.
 `;
 
-    const payload = {
-        model,
-        messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-        ],
-        temperature: 0.8,
-    };
+  const payload = {
+    model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+    temperature: 0.9, // more variety
+  };
 
-    let res;
-    try {
-        res = await fetch(`${apiBase}/v1/chat/completions`, {
-            method: "POST",
-            headers: {
-                Authorization: `Bearer ${apiKey}`,
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify(payload),
-        });
-    } catch (err) {
-        console.error("OpenAI network error", err);
-        return new Response(JSON.stringify({ error: `OpenAI network error: ${err.message || err}` }), {
-            status: 500,
-            headers: JSON_HEADERS,
-        });
-    }
+  let res;
+  try {
+    res = await fetch(`${apiBase}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.error("OpenAI network error", err);
+    return new Response(JSON.stringify({ error: `OpenAI network error: ${err.message || err}` }), {
+      status: 500,
+      headers: JSON_HEADERS,
+    });
+  }
 
-    if (!res.ok) {
-        const errorText = await res.text();
-        console.error("OpenAI error", res.status, errorText);
-        return new Response(JSON.stringify({ error: `OpenAI API error ${res.status}`, detail: errorText }), {
-            status: 500,
-            headers: JSON_HEADERS,
-        });
-    }
+  if (!res.ok) {
+    const errorText = await res.text();
+    console.error("OpenAI error", res.status, errorText);
+    return new Response(JSON.stringify({ error: `OpenAI API error ${res.status}`, detail: errorText }), {
+      status: 500,
+      headers: JSON_HEADERS,
+    });
+  }
 
-    const data = await res.json();
-    const text = data?.choices?.[0]?.message?.content?.trim() ?? "";
+  const data = await res.json();
+  const text = data?.choices?.[0]?.message?.content?.trim() ?? "";
 
-    return new Response(JSON.stringify({ text }), { headers: JSON_HEADERS });
+  return new Response(JSON.stringify({ text }), { headers: JSON_HEADERS });
 }
 
 /**
@@ -440,6 +484,9 @@ async function runScheduler(env) {
   console.log(`Scheduler: found ${results.length} posts to publish`);
 
   for (const post of results) {
+    const logs = [];
+    const nowTs = nowUnix();
+
     try {
       const platforms = (post.platforms || "")
         .split(",")
@@ -450,21 +497,44 @@ async function runScheduler(env) {
       const profileConfig = getProfileConfig(env, profileKey);
 
       if (platforms.includes("fb")) {
-        await publishToFacebook(post, env, profileConfig);
-      }
-      if (platforms.includes("ig")) {
-        await publishToInstagram(post, env, profileConfig);
+        const fbRes = await publishToFacebook(post, env, profileConfig);
+        if (fbRes?.ok) {
+          logs.push(
+            `FB OK: ${new Date(nowTs * 1000).toISOString()} -> ${fbRes.data?.id || JSON.stringify(fbRes.data)}`
+          );
+        } else {
+          logs.push(
+            `FB ERROR: ${new Date(nowTs * 1000).toISOString()} -> ${fbRes?.detail || fbRes?.error || ""}`
+          );
+        }
       }
 
+      if (platforms.includes("ig")) {
+        const igRes = await publishToInstagram(post, env, profileConfig);
+        if (igRes?.ok) {
+          logs.push(
+            `IG OK: ${new Date(nowTs * 1000).toISOString()} -> ${igRes.data?.id || JSON.stringify(igRes.data)}`
+          );
+        } else {
+          logs.push(
+            `IG ERROR: ${new Date(nowTs * 1000).toISOString()} -> ${igRes?.detail || igRes?.error || ""}`
+          );
+        }
+      }
+
+      const logText = logs.join("\n");
+
       await env.DB.prepare(
-        "UPDATE posts SET status = ?, published_at = ?, updated_at = ?, error = NULL WHERE id = ?"
+        "UPDATE posts SET status = ?, published_at = ?, updated_at = ?, error = NULL, log = ? WHERE id = ?"
       )
-        .bind("published", now, now, post.id)
+        .bind("published", nowTs, nowTs, logText, post.id)
         .run();
     } catch (err) {
       console.error("Error publishing post", post.id, err);
-      await env.DB.prepare("UPDATE posts SET status = ?, error = ?, updated_at = ? WHERE id = ?")
-        .bind("failed", String(err), now, post.id)
+      const errString = String(err);
+
+      await env.DB.prepare("UPDATE posts SET status = ?, error = ?, updated_at = ?, log = ? WHERE id = ?")
+        .bind("failed", errString, nowTs, errString, post.id)
         .run();
     }
   }

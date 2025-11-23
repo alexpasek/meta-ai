@@ -15,3 +15,7 @@ npx wrangler pages deploy dist --project-name=meta-ai-scheduler-ui. front end st
 https://developers.facebook.com/tools/explorer/?method=GET&path=me%2Faccounts&version=v24.0.   get page token
 
 npx wrangler secret put META_IG_ACCESS_TOKEN_EPF renter token vie backend
+
+META_PAGE_ACCESS_TOKEN.         //FOR CLAGARY
+npx wrangler secret put EPF_PAGE_ACCESS_TOKEN
+npx wrangler secret put META_PAGE_ACCESS_TOKEN_WALLPAPER
