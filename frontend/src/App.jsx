@@ -1,5 +1,6 @@
 // frontend/src/App.jsx
 import React, { useState, useEffect } from "react";
+import ImageGenerator from "./ImageGenerator";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
@@ -61,15 +62,22 @@ function formatDateTimeLocal(date) {
 }
 
 function App() {
+  const [accessKey, setAccessKey] = useState(
+    () => (typeof window !== "undefined" && window.localStorage.getItem("accessKey")) || ""
+  );
+  const [keyInput, setKeyInput] = useState("");
   const [files, setFiles] = useState([]);
   const [scheduledPosts, setScheduledPosts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [cancelingId, setCancelingId] = useState(null);
   const [postingId, setPostingId] = useState(null);
+  const [postingNowId, setPostingNowId] = useState(null);
   const [autoStart, setAutoStart] = useState("");
   const [autoInterval, setAutoInterval] = useState("1"); // days between posts
   const [bulkCaptionLoading, setBulkCaptionLoading] = useState(false);
   const [removingId, setRemovingId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+  const [retryingId, setRetryingId] = useState(null);
   const [statusFilter, setStatusFilter] = useState("all");
   const [hidePosted, setHidePosted] = useState(false);
   const [openLogId, setOpenLogId] = useState(null);
@@ -88,12 +96,24 @@ function App() {
   }, [scheduledPosts]);
 
   useEffect(() => {
-    loadScheduled();
-  }, []);
+    if (accessKey) {
+      loadScheduled();
+    }
+  }, [accessKey]);
 
   async function loadScheduled() {
     try {
-      const res = await fetch(`${API_BASE}/api/posts`);
+      const res = await fetch(`${API_BASE}/api/posts`, {
+        headers: makeHeaders(),
+      });
+      if (res.status === 401) {
+        alert("Access key is invalid. Please enter again.");
+        setAccessKey("");
+        if (typeof window !== "undefined") {
+          window.localStorage.removeItem("accessKey");
+        }
+        return;
+      }
       const data = await res.json();
       setScheduledPosts(data);
     } catch (err) {
@@ -116,6 +136,14 @@ function App() {
       aiLoading: false,
     }));
     setFiles((prev) => [...prev, ...mapped]);
+  }
+
+  function makeHeaders(extra = {}) {
+    const headers = { ...extra };
+    if (accessKey) {
+      headers["Authorization"] = `Bearer ${accessKey}`;
+    }
+    return headers;
   }
 
   function updateDraft(id, patch) {
@@ -146,7 +174,7 @@ Mention the city/area naturally and invite people to get a quote or visit the we
 
       const res = await fetch(`${API_BASE}/api/ai/caption`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: makeHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
           prompt,
           platform: "both",
@@ -189,6 +217,26 @@ Mention the city/area naturally and invite people to get a quote or visit the we
     }
   }
 
+  function addAiDraft(url, prompt) {
+    setFiles((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        file: null,
+        imageUrl: url,
+        previewUrl: url,
+        caption: "",
+        hashtags: "",
+        platforms: ["fb", "ig"],
+        scheduledLocal: "",
+        profileKey: "calgary",
+        status: "draft-ai",
+        sourcePrompt: prompt,
+        aiLoading: false,
+      },
+    ]);
+  }
+
   async function uploadFile(draft) {
     if (!draft.file) return null;
 
@@ -197,6 +245,7 @@ Mention the city/area naturally and invite people to get a quote or visit the we
 
     const res = await fetch(`${API_BASE}/api/upload`, {
       method: "POST",
+      headers: makeHeaders(),
       body: formData,
     });
 
@@ -232,20 +281,20 @@ Mention the city/area naturally and invite people to get a quote or visit the we
 
         if (!imageUrl) continue;
 
-      const body = {
-        title: draft.file.name,
-        imageUrl,
-        caption: draft.caption,
-        hashtags: draft.hashtags,
-        platforms: draft.platforms,
-        scheduledAt: scheduledUnix,
-        status: "scheduled",
-        profileKey: draft.profileKey,
-      };
+        const body = {
+          title: draft.file?.name || draft.title || "AI image",
+          imageUrl,
+          caption: draft.caption,
+          hashtags: draft.hashtags,
+          platforms: draft.platforms,
+          scheduledAt: scheduledUnix,
+          status: "scheduled",
+          profileKey: draft.profileKey,
+        };
 
         await fetch(`${API_BASE}/api/posts`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: makeHeaders({ "Content-Type": "application/json" }),
           body: JSON.stringify(body),
         });
       }
@@ -333,10 +382,9 @@ Mention the city/area naturally and invite people to get a quote or visit the we
   async function handleCancel(id) {
     setCancelingId(id);
     try {
-      const res = await fetch(`${API_BASE}/api/posts/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "cancelled" }),
+      const res = await fetch(`${API_BASE}/api/posts/${id}/cancel`, {
+        method: "POST",
+        headers: makeHeaders(),
       });
       if (!res.ok) {
         throw new Error(`Cancel failed (${res.status})`);
@@ -351,25 +399,21 @@ Mention the city/area naturally and invite people to get a quote or visit the we
   }
 
   async function handlePostNow(id) {
-    setPostingId(id);
+    setPostingNowId(id);
     try {
-      const nowSeconds = Math.floor(Date.now() / 1000);
-      // Move scheduled_at to now and ensure status is scheduled, then trigger scheduler
-      const res = await fetch(`${API_BASE}/api/posts/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scheduledAt: nowSeconds, status: "scheduled" }),
+      const res = await fetch(`${API_BASE}/api/posts/${id}/publish-now`, {
+        method: "POST",
+        headers: makeHeaders(),
       });
       if (!res.ok) {
-        throw new Error(`Post-now update failed (${res.status})`);
+        throw new Error(`Post now failed (${res.status})`);
       }
-      await fetch(`${API_BASE}/api/scheduler/run`, { method: "POST" });
       await loadScheduled();
     } catch (err) {
       console.error("Post now error", err);
       alert(err?.message || "Failed to publish now");
     } finally {
-      setPostingId(null);
+      setPostingNowId(null);
     }
   }
 
@@ -377,9 +421,8 @@ Mention the city/area naturally and invite people to get a quote or visit the we
     setRemovingId(id);
     try {
       const res = await fetch(`${API_BASE}/api/posts/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "archived" }),
+        method: "DELETE",
+        headers: makeHeaders(),
       });
       if (!res.ok) {
         throw new Error(`Remove failed (${res.status})`);
@@ -393,6 +436,56 @@ Mention the city/area naturally and invite people to get a quote or visit the we
     }
   }
 
+  async function handleRetry(id) {
+    setRetryingId(id);
+    try {
+      const res = await fetch(`${API_BASE}/api/posts/${id}/retry`, {
+        method: "POST",
+        headers: makeHeaders(),
+      });
+      if (!res.ok) {
+        throw new Error(`Retry failed (${res.status})`);
+      }
+      await loadScheduled();
+    } catch (err) {
+      console.error("Retry error", err);
+      alert(err?.message || "Failed to retry post");
+    } finally {
+      setRetryingId(null);
+    }
+  }
+
+  if (!accessKey) {
+    return (
+      <div className="app auth-wrapper">
+        <div className="card auth-card">
+          <h1>Meta AI Scheduler – Access</h1>
+          <p>Enter your access key to use this tool.</p>
+          <input
+            type="password"
+            placeholder="Access key"
+            value={keyInput}
+            onChange={(e) => setKeyInput(e.target.value)}
+          />
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              const v = keyInput.trim();
+              if (!v) return;
+              setAccessKey(v);
+              if (typeof window !== "undefined") {
+                window.localStorage.setItem("accessKey", v);
+              }
+            }}
+          >
+            Enter
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <header className="app-header">
@@ -402,8 +495,14 @@ Mention the city/area naturally and invite people to get a quote or visit the we
 
       <main className="app-main">
         <section className="card">
-          <h2>1. Upload photos</h2>
-          <p>These stay in your browser. For posting, you will provide public URLs (R2, S3, etc.).</p>
+          <h2>1. Create content</h2>
+          <p>Generate AI images or upload your own photos, then let AI write captions and schedule everything.</p>
+
+          <ImageGenerator onImageGenerated={addAiDraft} makeHeaders={makeHeaders} />
+
+          <hr className="section-divider" />
+
+          <h3>Or upload your own photos</h3>
           <input
             type="file"
             accept="image/*"
@@ -448,10 +547,14 @@ Mention the city/area naturally and invite people to get a quote or visit the we
             <div className="draft-grid">
               {files.map((draft) => (
                 <div key={draft.id} className="draft-card">
-                  <img src={draft.previewUrl} alt={draft.file.name} className="draft-image" />
+                  <img
+                    src={draft.previewUrl || draft.imageUrl}
+                    alt={draft.file?.name || draft.title || "AI image"}
+                    className="draft-image"
+                  />
                     <div className="draft-body">
                       <div className="draft-row">
-                        <span className="draft-title">{draft.file.name}</span>
+                        <span className="draft-title">{draft.file?.name || draft.title || "AI image"}</span>
                         <span className="draft-status">{draft.status}</span>
                         <button
                           type="button"
@@ -611,90 +714,104 @@ Mention the city/area naturally and invite people to get a quote or visit the we
               </label>
             </div>
           </div>
-          {scheduledPosts.length === 0 ? (
-            <p className="muted">No posts in queue yet.</p>
-          ) : (
-            <div className="scheduled-list">
-              {scheduledPosts
+            {scheduledPosts.length === 0 ? (
+              <p className="muted">No posts in queue yet.</p>
+            ) : (
+              <div className="scheduled-list">
+                {scheduledPosts
                 .filter((post) => {
                   if (hidePosted && post.status === "published") return false;
                   if (statusFilter === "all") return post.status !== "archived";
                   return post.status === statusFilter;
                 })
                 .map((post) => (
-                  <div key={post.id} className="scheduled-row-outer">
-                    <div className="scheduled-row">
-                      <div>
-                        <div className="scheduled-title">{post.title || "Untitled"}</div>
-                        <div className="scheduled-meta">
-                          <span>{(post.platforms || "").toUpperCase()}</span>
-                          <span>at {fromUnixSeconds(post.scheduled_at)}</span>
-                          <span className="text-xs px-2 py-0.5 rounded bg-slate-100">
-                            {post.profile_key === "calgary"
-                              ? "Calgary"
+                  <div key={post.id} className="scheduled-row">
+                    <div className="scheduled-main">
+                      <div className="scheduled-title">{post.title || "Untitled"}</div>
+                      <div className="scheduled-meta">
+                        <span>{(post.platforms || "").toUpperCase()}</span>
+                        <span>at {fromUnixSeconds(post.scheduled_at)}</span>
+                        <span
+                          className={
+                            "profile-pill " +
+                            (post.profile_key === "calgary"
+                              ? "profile-calgary"
                               : post.profile_key === "epf"
-                              ? "EPF"
+                              ? "profile-epf"
                               : post.profile_key === "wallpaper"
-                              ? "Wallpaper"
-                              : post.profile_key || "Default"}
-                          </span>
-                        </div>
+                              ? "profile-wallpaper"
+                              : "profile-default")
+                          }
+                        >
+                          {post.profile_key === "calgary"
+                            ? "Calgary"
+                            : post.profile_key === "epf"
+                            ? "EPF"
+                            : post.profile_key === "wallpaper"
+                            ? "Wallpaper"
+                            : post.profile_key || "Default"}
+                        </span>
                       </div>
 
-                      <div className="scheduled-right">
-                        <div className={`badge ${post.status}`}>{post.status}</div>
+                      {(post.error || post.log) && (
+                        <div className="scheduled-log">
+                          <details>
+                            <summary>View log</summary>
+                            <pre>{post.log || post.error}</pre>
+                          </details>
+                        </div>
+                      )}
+                    </div>
 
-                        <div className="action-row">
+                    <div className="scheduled-actions">
+                      <span className={`badge ${post.status}`}>{post.status}</span>
+
+                      {post.status === "scheduled" && (
+                        <>
                           <button
                             type="button"
                             className="secondary"
-                            onClick={() => setOpenLogId(openLogId === post.id ? null : post.id)}
+                            onClick={() => handleCancel(post.id)}
+                            disabled={cancelingId === post.id}
                           >
-                            {openLogId === post.id ? "Hide log" : "View log"}
+                            {cancelingId === post.id ? "Cancelling..." : "Cancel"}
                           </button>
                           <button
                             type="button"
-                            className="danger"
-                            onClick={() => handleRemove(post.id)}
-                            disabled={removingId === post.id}
+                            className="secondary"
+                            onClick={() => handlePostNow(post.id)}
+                            disabled={postingNowId === post.id}
                           >
-                            {removingId === post.id ? "Removing..." : "Remove"}
+                            {postingNowId === post.id ? "Posting..." : "Post now"}
                           </button>
-                        </div>
+                        </>
+                      )}
 
-                        {post.status === "scheduled" && (
-                          <div className="scheduled-actions">
-                            <button
-                              type="button"
-                              className="secondary"
-                              onClick={() => handlePostNow(post.id)}
-                              disabled={postingId === post.id}
-                            >
-                              {postingId === post.id ? "Posting..." : "Post now"}
-                            </button>
-                            <button
-                              type="button"
-                              className="secondary"
-                              onClick={() => handleCancel(post.id)}
-                              disabled={cancelingId === post.id}
-                            >
-                              {cancelingId === post.id ? "Cancelling..." : "Cancel"}
-                            </button>
-                          </div>
-                        )}
-                      </div>
+                      {post.status === "failed" && (
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => handleRetry(post.id)}
+                          disabled={retryingId === post.id}
+                        >
+                          {retryingId === post.id ? "Retrying..." : "Retry"}
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={() => handleRemove(post.id)}
+                        disabled={removingId === post.id}
+                      >
+                        {removingId === post.id ? "Removing..." : "Remove"}
+                      </button>
                     </div>
-
-                    {openLogId === post.id && (
-                      <div className="log-panel">
-                        <pre>{post.log || post.error || "No log recorded yet for this post."}</pre>
-                      </div>
-                    )}
                   </div>
                 ))}
-            </div>
-          )}
-        </section>
+              </div>
+            )}
+          </section>
 
         <section className="card">
           <h2>3. Token helper (manual)</h2>

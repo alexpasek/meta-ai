@@ -8,9 +8,9 @@
 // - Cron scheduler that publishes due posts to Meta Graph API
 
 const CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
 const JSON_HEADERS = { "Content-Type": "application/json", ...CORS_HEADERS };
@@ -89,28 +89,44 @@ function cleanBaseUrl(value, fallback) {
 }
 
 export default {
-    async fetch(request, env, ctx) {
-        try {
-            const url = new URL(request.url);
-            const { pathname } = url;
-            const method = request.method.toUpperCase();
+  async fetch(request, env, ctx) {
+    try {
+      const url = new URL(request.url);
+      const { pathname } = url;
+      const method = request.method.toUpperCase();
 
-            if (method === "OPTIONS") {
-                return new Response(null, { status: 204, headers: CORS_HEADERS });
+      // CORS preflight first
+      if (method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: CORS_HEADERS });
+      }
+
+      // Public media access should bypass auth
+      if (pathname.startsWith("/media/") && method === "GET") {
+        return serveMedia(pathname, env);
+      }
+
+      // Minimal auth: APP_ACCESS_KEY
+      const appKey = env.APP_ACCESS_KEY;
+      if (appKey) {
+        const authHeader = request.headers.get("Authorization") || "";
+        const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+
+                if (!token || token !== appKey) {
+                    return new Response(JSON.stringify({ error: "unauthorized" }), {
+                        status: 401,
+                        headers: JSON_HEADERS,
+                    });
+                }
             }
 
-            if (pathname === "/api/health") {
-                return new Response(JSON.stringify({ ok: true, time: new Date().toISOString() }), {
-                    headers: JSON_HEADERS,
-                });
-            }
+      if (pathname === "/api/health") {
+        return new Response(JSON.stringify({ ok: true, time: new Date().toISOString() }), {
+          headers: JSON_HEADERS,
+        });
+      }
 
             if (pathname === "/api/upload" && method === "POST") {
                 return handleUpload(request, env);
-            }
-
-            if (pathname.startsWith("/media/") && method === "GET") {
-                return serveMedia(pathname, env);
             }
 
             if (pathname === "/api/posts" && method === "GET") {
@@ -125,9 +141,9 @@ export default {
 
       if (pathname.startsWith("/api/posts/")) {
         await ensureSchema(env);
-        const parts = pathname.split("/");
-        const id = parts[3]; // /api/posts/:id/...
-        const tail = parts.slice(4).join("/");
+        const segments = pathname.split("/");
+        const id = segments[3]; // /api/posts/:id/...
+        const tail = segments.slice(4).join("/");
 
         if (!id) {
           return new Response(JSON.stringify({ error: "Missing post id" }), {
@@ -144,17 +160,33 @@ export default {
           return cancelPost(id, env);
         }
 
-        if (method === "PUT" && !tail) {
+        if (tail === "publish-now" && method === "POST") {
+          return publishNow(id, env);
+        }
+
+        if (tail === "retry" && method === "POST") {
+          return retryPost(id, env);
+        }
+
+        if (!tail && method === "DELETE") {
+          return deletePost(id, env);
+        }
+
+        if (!tail && method === "PUT") {
           return updatePost(id, request, env);
         }
 
-        if (method === "GET" && !tail) {
+        if (!tail && method === "GET") {
           return getPost(id, env);
         }
       }
 
             if (pathname === "/api/ai/caption" && method === "POST") {
                 return generateCaption(request, env);
+            }
+
+            if (pathname === "/api/ai/image" && method === "POST") {
+                return generateImage(request, env);
             }
 
             if (pathname === "/api/scheduler/run" && method === "POST") {
@@ -344,6 +376,110 @@ async function cancelPost(id, env) {
   return new Response(JSON.stringify(row), { headers: JSON_HEADERS });
 }
 
+async function deletePost(id, env) {
+  const existing = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
+  if (!existing) {
+    return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: JSON_HEADERS });
+  }
+
+  await env.DB.prepare("DELETE FROM posts WHERE id = ?").bind(id).run();
+  return new Response(JSON.stringify({ ok: true, id }), { headers: JSON_HEADERS });
+}
+
+// Manually publish a single post NOW (no new DB columns)
+async function publishNow(id, env) {
+  await ensureSchema(env);
+
+  const existing = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
+
+  if (!existing) {
+    return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: JSON_HEADERS });
+  }
+
+  const now = nowUnix();
+
+  const profileKey = existing.profile_key || "calgary";
+  const profileConfig = getProfileConfig(env, profileKey);
+
+  const platforms = (existing.platforms || "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+  let fbInfo = null;
+  let igInfo = null;
+  let error = null;
+
+  if (platforms.includes("fb")) {
+    try {
+      fbInfo = await publishToFacebook(existing, env, profileConfig);
+      if (!fbInfo.ok) {
+        error = `FB: ${fbInfo.error || "unknown"}`;
+      }
+    } catch (e) {
+      console.error("publishNow FB error:", e);
+      error = `FB exception: ${String(e)}`;
+    }
+  }
+
+  if (platforms.includes("ig")) {
+    try {
+      igInfo = await publishToInstagram(existing, env, profileConfig);
+      if (igInfo && !igInfo.ok && !error) {
+        error = `IG: ${igInfo.error || "unknown"}`;
+      }
+    } catch (e) {
+      console.error("publishNow IG error:", e);
+      if (!error) error = `IG exception: ${String(e)}`;
+    }
+  }
+
+  const timestamp = new Date(now * 1000).toISOString();
+  const parts = [
+    `[POST NOW ${timestamp}]`,
+    `profile=${profileKey}`,
+    `FB=${fbInfo?.ok ? "OK" : fbInfo?.error || "skip"}`,
+    `IG=${igInfo?.ok ? "OK" : igInfo?.error || "skip"}`,
+  ];
+  if (error) parts.push(`error=${error}`);
+
+  const logEntry = parts.join(" | ");
+  const newLog = ((existing.log || "") + "\n" + logEntry).trim();
+
+  const status = error ? "failed" : "published";
+
+  await env.DB.prepare(
+    `UPDATE posts
+     SET status = ?, published_at = ?, updated_at = ?, error = ?, log = ?
+     WHERE id = ?`
+  )
+    .bind(status, now, now, error, newLog, id)
+    .run();
+
+  const row = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
+
+  return new Response(JSON.stringify(row), { headers: JSON_HEADERS });
+}
+
+async function retryPost(id, env) {
+  const existing = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
+  if (!existing) {
+    return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: JSON_HEADERS });
+  }
+
+  const now = nowUnix();
+  const newTime = now + 5 * 60;
+
+  await env.DB.prepare(
+    "UPDATE posts SET status = ?, scheduled_at = ?, updated_at = ?, error = NULL, log = NULL WHERE id = ?"
+  )
+    .bind("scheduled", newTime, now, id)
+    .run();
+
+  const row = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
+  return new Response(JSON.stringify(row), { headers: JSON_HEADERS });
+}
+
 /**
  * AI caption generation via OpenAI Chat Completions
  * Expects: { prompt: string, tone?: string, platform?: "fb"|"ig"|"both" }
@@ -459,6 +595,165 @@ Global rules:
   const text = data?.choices?.[0]?.message?.content?.trim() ?? "";
 
   return new Response(JSON.stringify({ text }), { headers: JSON_HEADERS });
+}
+
+async function generateImage(request, env) {
+  const apiKey = env.OPENAI_API_KEY || env.OPENAI_KEY || env.OPENAI_TOKEN;
+
+  if (!apiKey) {
+    return new Response(
+      JSON.stringify({
+        error: "OPENAI_API_KEY not set (tried OPENAI_API_KEY/OPENAI_KEY/OPENAI_TOKEN)",
+      }),
+      { status: 400, headers: JSON_HEADERS }
+    );
+  }
+
+  if (!env.MEDIA_BUCKET) {
+    return new Response(
+      JSON.stringify({
+        error: "MEDIA_BUCKET (R2) not configured for image storage",
+      }),
+      { status: 500, headers: JSON_HEADERS }
+    );
+  }
+
+  const body = await request.json();
+  const prompt = (body?.prompt || "").trim();
+
+  if (!prompt) {
+    return new Response(JSON.stringify({ error: "prompt is required" }), {
+      status: 400,
+      headers: JSON_HEADERS,
+    });
+  }
+
+  const apiBase = cleanBaseUrl(env.OPENAI_API_BASE, "https://api.openai.com");
+  const model = env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+
+  const payload = {
+    model,
+    prompt,
+    n: 1,
+    size: "1024x1024",
+  };
+
+  let res;
+  try {
+    res = await fetch(`${apiBase}/v1/images/generations`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.error("OpenAI image network error", err);
+    return new Response(
+      JSON.stringify({
+        error: `OpenAI image network error: ${err.message || err}`,
+      }),
+      { status: 500, headers: JSON_HEADERS }
+    );
+  }
+
+  const rawText = await res.text();
+  if (!res.ok) {
+    console.error("OpenAI image error", res.status, rawText);
+    return new Response(
+      JSON.stringify({
+        error: `OpenAI image API error ${res.status}`,
+        detail: rawText,
+      }),
+      { status: 500, headers: JSON_HEADERS }
+    );
+  }
+
+  let data;
+  try {
+    data = JSON.parse(rawText);
+  } catch (e) {
+    console.error("Failed to parse OpenAI image JSON", e, rawText);
+    return new Response(
+      JSON.stringify({
+        error: "Failed to parse OpenAI image response",
+      }),
+      { status: 500, headers: JSON_HEADERS }
+    );
+  }
+
+  const img = data?.data?.[0];
+  if (!img) {
+    console.error("OpenAI image response missing data", data);
+    return new Response(
+      JSON.stringify({
+        error: "OpenAI image response missing data[0]",
+        detail: data,
+      }),
+      { status: 500, headers: JSON_HEADERS }
+    );
+  }
+
+  let bytes;
+  let contentType = "image/png";
+
+  if (img.b64_json) {
+    const binaryStr = atob(img.b64_json);
+    const len = binaryStr.length;
+    const arr = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      arr[i] = binaryStr.charCodeAt(i);
+    }
+    bytes = arr;
+  } else if (img.url) {
+    const imgRes = await fetch(img.url);
+    if (!imgRes.ok) {
+      const t = await imgRes.text();
+      console.error("Error fetching image URL from OpenAI:", img.url, t);
+      return new Response(
+        JSON.stringify({
+          error: "Failed to download image from OpenAI URL",
+          detail: t,
+        }),
+        { status: 500, headers: JSON_HEADERS }
+      );
+    }
+    const buf = await imgRes.arrayBuffer();
+    bytes = new Uint8Array(buf);
+    const ct = imgRes.headers.get("content-type");
+    if (ct) contentType = ct;
+  } else {
+    console.error("OpenAI image: no b64_json or url found", img);
+    return new Response(
+      JSON.stringify({
+        error: "No b64_json or url in OpenAI image response",
+        detail: img,
+      }),
+      { status: 500, headers: JSON_HEADERS }
+    );
+  }
+
+  const safePrompt = prompt
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .slice(0, 40)
+    .replace(/^-|-$/g, "");
+  const key = `${crypto.randomUUID()}-${safePrompt || "ai-image"}.png`;
+
+  await env.MEDIA_BUCKET.put(key, bytes, {
+    httpMetadata: {
+      contentType,
+    },
+  });
+
+  const base = new URL(request.url).origin;
+  const urlOut = `${base}/media/${encodeURIComponent(key)}`;
+
+  return new Response(
+    JSON.stringify({ url: urlOut, key, prompt }),
+    { status: 200, headers: JSON_HEADERS }
+  );
 }
 
 /**
