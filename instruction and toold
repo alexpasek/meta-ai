@@ -19,3 +19,40 @@ npx wrangler secret put META_IG_ACCESS_TOKEN_EPF renter token vie backend
 META_PAGE_ACCESS_TOKEN.         //FOR CLAGARY
 npx wrangler secret put EPF_PAGE_ACCESS_TOKEN
 npx wrangler secret put META_PAGE_ACCESS_TOKEN_WALLPAPER
+
+
+
+
+
+add new profile. 
+3. How to add a NEW page/account later
+
+
+
+3.1 Set env vars in Cloudflare
+
+Use wrangler to set secrets (example key: alpha → ALPHA):
+
+npx wrangler secret put META_PAGE_ID_ALPHA
+npx wrangler secret put META_PAGE_ACCESS_TOKEN_ALPHA
+npx wrangler secret put META_IG_USER_ID_ALPHA
+npx wrangler secret put META_IG_ACCESS_TOKEN_ALPHA
+
+
+Values come from Graph Explorer / API as usual.
+
+3.2 Add it to PROFILE_CONFIG in App.jsx
+const PROFILE_CONFIG = {
+  calgary: { ... existing ... },
+  epf: { ... existing ... },
+  wallpaper: { ... existing ... },
+
+  alpha: {
+    key: "alpha",
+    label: "Alpha Drywall – GTA",
+    city: "Mississauga / GTA",
+    seoLocation: "Mississauga, Oakville, Burlington, Hamilton and the GTA",
+    website: "https://alphadrywallfinishing.com",
+    brand: "Alpha Drywall Finishing",
+  },
+};

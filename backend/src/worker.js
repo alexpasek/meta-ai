@@ -189,6 +189,14 @@ export default {
                 return generateImage(request, env);
             }
 
+            if (pathname === "/api/profile/validate" && method === "POST") {
+                return validateProfile(request, env);
+            }
+
+            if (pathname === "/api/meta/check-profile" && (method === "POST" || method === "GET")) {
+                return validateProfile(request, env);
+            }
+
             if (pathname === "/api/scheduler/run" && method === "POST") {
                 await ensureSchema(env);
                 await runScheduler(env);
@@ -485,12 +493,40 @@ async function retryPost(id, env) {
  * Expects: { prompt: string, tone?: string, platform?: "fb"|"ig"|"both" }
  */
 
+function describeServiceType(serviceType) {
+  switch (serviceType) {
+    case "drywall":
+      return "drywall installation, taping, mudding, and finishing";
+    case "painting":
+      return "interior painting for walls, ceilings, trim, and doors";
+    case "wallpaper":
+      return "wallpaper removal and wall preparation";
+    case "baseboard":
+      return "baseboard and trim installation";
+    default:
+      return "popcorn ceiling removal and smooth ceiling finishing";
+  }
+}
+
+function describeCtaMode(ctaMode) {
+  if (ctaMode === "brand") {
+    return "Focus on building the brand and encouraging people to follow the page or save the post, not only asking for a quote.";
+  }
+  if (ctaMode === "review") {
+    return "Gently encourage past customers to leave a Google review, without sounding pushy and without adding a raw URL.";
+  }
+  return "Focus on getting new leads: invite people to DM, call, or request a free quote in a natural, human tone.";
+}
+
 async function generateCaption(request, env) {
   const apiKey = env.OPENAI_API_KEY || env.OPENAI_KEY || env.OPENAI_TOKEN;
 
   if (!apiKey) {
     return new Response(
-      JSON.stringify({ error: "OPENAI_API_KEY not set (tried OPENAI_API_KEY/OPENAI_KEY/OPENAI_TOKEN)" }),
+      JSON.stringify({
+        error:
+          "OPENAI_API_KEY not set (tried OPENAI_API_KEY/OPENAI_KEY/OPENAI_TOKEN)",
+      }),
       {
         status: 400,
         headers: JSON_HEADERS,
@@ -499,7 +535,18 @@ async function generateCaption(request, env) {
   }
 
   const body = await request.json();
-  const { prompt = "", tone = "friendly", platform = "both", profile = "calgary" } = body || {};
+  const {
+    prompt = "",
+    tone = "friendly",
+    platform = "both",
+    profile = "calgary",
+
+    // optional extras (front-end can send these later)
+    serviceType,
+    ctaMode,
+    offerText,
+    neighbourhood,
+  } = body || {};
 
   const apiBase = cleanBaseUrl(env.OPENAI_API_BASE, "https://api.openai.com");
   const model = env.OPENAI_MODEL || "gpt-4o-mini";
@@ -507,52 +554,80 @@ async function generateCaption(request, env) {
   let profileRules = "";
   if (profile === "calgary") {
     profileRules = `
-Local SEO focus:
-- Talk about Calgary homeowners and nearby areas (Airdrie, Chestermere, Okotoks when natural).
-- Include the website "https://popcornceilingremovalcalgary.com" once in a natural way
-  (e.g. "Details at popcornceilingremovalcalgary.com").
-- Use hashtags like #calgary #yyc plus service terms (#popcornceilingremoval #drywall #interiorpainting).
+Brand name: "Popcorn Ceiling Removal Calgary".
+Location focus: Calgary homeowners and nearby areas such as Airdrie, Chestermere and Okotoks.
+
+Brand/domain rules:
+- You may mention the brand "Popcorn Ceiling Removal Calgary".
+- You may mention "popcornceilingremovalcalgary.com" ONCE, but ONLY if the prompt explicitly asks you to include a website URL.
+- NEVER mention "EPF Pro Services" or "epfproservices.com".
+- NEVER mention "Wallpaper Removal Pro" or "wallpaperremovalpro.com".
 `;
   } else if (profile === "epf") {
     profileRules = `
-Local SEO focus:
-- Talk about Mississauga, Oakville, Burlington, Hamilton and the GTA.
-- Include the website "https://epfproservices.com" once in a natural way.
-- Use hashtags with city + GTA + services (e.g. #mississauga #oakville #gta #popcornceilingremoval #interiorpainting).
+Brand name: "EPF Pro Services".
+Location focus: Mississauga, Oakville, Burlington, Milton, Hamilton and the GTA.
+
+Brand/domain rules:
+- You may mention the brand "EPF Pro Services".
+- You may mention "epfproservices.com" ONCE, but ONLY if the prompt explicitly asks you to include a website URL.
+- NEVER mention "Popcorn Ceiling Removal Calgary" or "popcornceilingremovalcalgary.com".
+- NEVER mention "Wallpaper Removal Pro" or "wallpaperremovalpro.com".
 `;
   } else if (profile === "wallpaper") {
     profileRules = `
-Local SEO focus:
-- Wallpaper removal in Toronto / GTA.
-- Mention the brand "Wallpaper Removal Pro" and include the website once (e.g. wallpaperremovalpro.com or your real URL).
-- Use hashtags around wallpaper removal + GTA (e.g. #wallpaperremoval #gtahomes #toronto).
+Brand name: "Wallpaper Removal Pro".
+Location focus: Toronto / GTA, wallpaper removal and wall preparation.
+
+Brand/domain rules:
+- You may mention the brand "Wallpaper Removal Pro".
+- You may mention "wallpaperremovalpro.com" ONCE, but ONLY if the prompt explicitly asks you to include a website URL.
+- NEVER mention popcorn ceiling removal as a main service.
+- NEVER mention "Popcorn Ceiling Removal Calgary" or "popcornceilingremovalcalgary.com".
+- NEVER mention "EPF Pro Services" or "epfproservices.com".
 `;
   }
 
-  const systemPrompt =
-    "You are a social media copywriter for a home-improvement company (popcorn ceiling removal, drywall, painting, wallpaper removal). " +
-    "Write natural, human captions that sound like a real contractor, not a robot. " +
-    "Make each caption feel unique; vary the hook and structure so it doesn't sound like a copy-paste template.";
-
   const platformLabel =
-    platform === "both" ? "Facebook AND Instagram" : platform === "fb" ? "Facebook" : "Instagram";
+    platform === "both"
+      ? "both Facebook and Instagram"
+      : platform === "fb"
+      ? "Facebook"
+      : "Instagram";
+
+  const serviceDescription = serviceType ? describeServiceType(serviceType) : null;
+  const ctaDescription = ctaMode ? describeCtaMode(ctaMode) : null;
+
+  const systemPrompt =
+    "You are a social media copywriter for a local home-improvement contractor " +
+    "(popcorn ceiling removal, drywall, painting, wallpaper removal). " +
+    "You write natural, human captions that sound like a real small contractor—" +
+    "not a big marketing agency and not a robot. Every caption must feel unique.";
 
   const userPrompt = `
-Create ONE caption for ${platformLabel}.
+Write ONE single caption that can be used on ${platformLabel}.
 
-Details:
+Business / service context (if provided):
+${serviceDescription ? `- Service: ${serviceDescription}.` : ""}
+${ctaDescription ? `- Call-to-action style: ${ctaDescription}` : ""}
+${neighbourhood ? `- Neighbourhood / area mentioned: ${neighbourhood}.` : ""}
+
+Details from the UI / user:
 ${prompt}
 
-Profile-specific SEO rules:
+Profile-specific rules:
 ${profileRules}
 
-Global rules:
-- Start with a strong first line that hooks attention (change your hook style from post to post).
-- 2–4 short sentences or bullet-style lines (easy to read on phones).
-- Include a clear call to action (DM us or visit the website for a quote) but keep it casual and human.
-- Add 6–10 hashtags at the end, focused on local city/area + service keywords.
-- 2–4 emojis max, only if they feel natural.
-- Avoid generic boilerplate like "another happy customer" or "we transformed this space" as the main line; be more specific.
+Formatting rules:
+- Output ONLY the caption text (no markdown, no headings).
+- Do NOT create separate Facebook and Instagram captions.
+- Do NOT write labels like "Facebook Caption:" or "Instagram Caption:".
+- Do NOT include any separators like "---" between sections.
+- Write 2–4 short sentences or short bullet-style lines.
+- Include a clear, natural call to action (DM, call, or ask for a quote) **in words**, not by dropping a raw link.
+- Do NOT include any website URL or domain name UNLESS the prompt explicitly asks you to include a specific URL.
+- Do NOT add any hashtags UNLESS the prompt explicitly asks for hashtags.
+- Keep the tone ${tone}, friendly and human – like a local contractor talking to homeowners.
 `;
 
   const payload = {
@@ -561,7 +636,7 @@ Global rules:
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
     ],
-    temperature: 0.9, // more variety
+    temperature: 0.9,
   };
 
   let res;
@@ -576,19 +651,28 @@ Global rules:
     });
   } catch (err) {
     console.error("OpenAI network error", err);
-    return new Response(JSON.stringify({ error: `OpenAI network error: ${err.message || err}` }), {
-      status: 500,
-      headers: JSON_HEADERS,
-    });
+    return new Response(
+      JSON.stringify({ error: `OpenAI network error: ${err.message || err}` }),
+      {
+        status: 500,
+        headers: JSON_HEADERS,
+      }
+    );
   }
 
   if (!res.ok) {
     const errorText = await res.text();
     console.error("OpenAI error", res.status, errorText);
-    return new Response(JSON.stringify({ error: `OpenAI API error ${res.status}`, detail: errorText }), {
-      status: 500,
-      headers: JSON_HEADERS,
-    });
+    return new Response(
+      JSON.stringify({
+        error: `OpenAI API error ${res.status}`,
+        detail: errorText,
+      }),
+      {
+        status: 500,
+        headers: JSON_HEADERS,
+      }
+    );
   }
 
   const data = await res.json();
@@ -596,7 +680,6 @@ Global rules:
 
   return new Response(JSON.stringify({ text }), { headers: JSON_HEADERS });
 }
-
 async function generateImage(request, env) {
   const apiKey = env.OPENAI_API_KEY || env.OPENAI_KEY || env.OPENAI_TOKEN;
 
@@ -754,6 +837,96 @@ async function generateImage(request, env) {
     JSON.stringify({ url: urlOut, key, prompt }),
     { status: 200, headers: JSON_HEADERS }
   );
+}
+
+/**
+ * Validate a profile's configured FB/IG credentials by hitting the Graph API.
+ * Does not modify scheduler or publish behavior.
+ */
+async function validateProfile(request, env) {
+  let profileKey = "calgary";
+
+  if (request.method === "GET") {
+    const url = new URL(request.url);
+    const keyParam = url.searchParams.get("key") || url.searchParams.get("profileKey");
+    if (keyParam) profileKey = keyParam;
+  } else {
+    try {
+      const body = await request.json();
+      profileKey = body?.profileKey || profileKey;
+    } catch {
+      // ignore
+    }
+  }
+
+  profileKey = profileKey.trim().toLowerCase();
+  const cfg = getProfileConfig(env, profileKey);
+
+  const fbConfigured = !!(cfg.fbPageId && cfg.fbToken);
+  const igConfigured = !!(cfg.igUserId && cfg.igToken);
+
+  const fb = { configured: fbConfigured };
+  const ig = { configured: igConfigured };
+
+  if (fbConfigured) {
+    const fbUrl = `https://graph.facebook.com/v19.0/${cfg.fbPageId}?fields=id,name&access_token=${encodeURIComponent(
+      cfg.fbToken
+    )}`;
+    try {
+      const res = await fetch(fbUrl);
+      const text = await res.text();
+      if (!res.ok) {
+        fb.ok = false;
+        fb.error = "fb_lookup_failed";
+        fb.detail = text;
+      } else {
+        fb.ok = true;
+        try {
+          fb.data = JSON.parse(text);
+        } catch {
+          fb.data = { raw: text };
+        }
+      }
+    } catch (err) {
+      fb.ok = false;
+      fb.error = "fb_network_error";
+      fb.detail = String(err);
+    }
+  }
+
+  if (igConfigured) {
+    const igUrl = `https://graph.facebook.com/v19.0/${cfg.igUserId}?fields=id,username&access_token=${encodeURIComponent(
+      cfg.igToken
+    )}`;
+    try {
+      const res = await fetch(igUrl);
+      const text = await res.text();
+      if (!res.ok) {
+        ig.ok = false;
+        ig.error = "ig_lookup_failed";
+        ig.detail = text;
+      } else {
+        ig.ok = true;
+        try {
+          ig.data = JSON.parse(text);
+        } catch {
+          ig.data = { raw: text };
+        }
+      }
+    } catch (err) {
+      ig.ok = false;
+      ig.error = "ig_network_error";
+      ig.detail = String(err);
+    }
+  }
+
+  const result = {
+    profileKey,
+    fb,
+    ig,
+  };
+
+  return new Response(JSON.stringify(result), { status: 200, headers: JSON_HEADERS });
 }
 
 /**
@@ -930,17 +1103,19 @@ function getGraphConfig(env) {
 }
 
 function getProfileConfig(env, profileKey) {
-  // Default: Calgary (uses your existing env vars)
-  if (!profileKey || profileKey === "calgary") {
+  const key = (profileKey || "calgary").toLowerCase();
+
+  // 1) Backward-compatible known profiles
+  if (key === "calgary") {
     return {
-      fbPageId: env.META_PAGE_ID, // 807570945780920
+      fbPageId: env.META_PAGE_ID,
       fbToken: env.META_PAGE_ACCESS_TOKEN,
-      igUserId: env.META_IG_USER_ID, // 17841477810663121
+      igUserId: env.META_IG_USER_ID,
       igToken: env.META_IG_ACCESS_TOKEN,
     };
   }
 
-  if (profileKey === "epf") {
+  if (key === "epf") {
     return {
       fbPageId: env.META_PAGE_ID_EPF,
       fbToken: env.META_PAGE_ACCESS_TOKEN_EPF,
@@ -949,7 +1124,7 @@ function getProfileConfig(env, profileKey) {
     };
   }
 
-  if (profileKey === "wallpaper") {
+  if (key === "wallpaper") {
     return {
       fbPageId: env.META_PAGE_ID_WALLPAPER,
       fbToken: env.META_PAGE_ACCESS_TOKEN_WALLPAPER,
@@ -958,7 +1133,29 @@ function getProfileConfig(env, profileKey) {
     };
   }
 
-  // Fallback to Calgary if unknown key
+  // 2) Generic pattern for NEW profiles:
+  //    META_PAGE_ID_MYBRAND
+  //    META_PAGE_ACCESS_TOKEN_MYBRAND
+  //    META_IG_USER_ID_MYBRAND
+  //    META_IG_ACCESS_TOKEN_MYBRAND
+  const upper = key.toUpperCase();
+
+  const fbPageId = env[`META_PAGE_ID_${upper}`];
+  const fbToken = env[`META_PAGE_ACCESS_TOKEN_${upper}`];
+  const igUserId = env[`META_IG_USER_ID_${upper}`];
+  const igToken = env[`META_IG_ACCESS_TOKEN_${upper}`];
+
+  if (fbPageId || fbToken || igUserId || igToken) {
+    // If any of the specific vars exist, build config using them
+    return {
+      fbPageId: fbPageId || env.META_PAGE_ID,
+      fbToken: fbToken || env.META_PAGE_ACCESS_TOKEN,
+      igUserId: igUserId || env.META_IG_USER_ID,
+      igToken: igToken || env.META_IG_ACCESS_TOKEN,
+    };
+  }
+
+  // 3) Fallback to Calgary if unknown key and no profile-specific env
   return {
     fbPageId: env.META_PAGE_ID,
     fbToken: env.META_PAGE_ACCESS_TOKEN,
@@ -1076,10 +1273,10 @@ async function publishToInstagram(post, env, profileConfig) {
   )}`;
 
   let statusCode = "IN_PROGRESS";
-  const maxAttempts = 5;
-  const delayMs = 2000;
+  const maxStatusAttempts = 5;
+  const statusDelayMs = 2000;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  for (let attempt = 1; attempt <= maxStatusAttempts; attempt++) {
     const statusRes = await fetch(statusUrl);
     const statusText = await statusRes.text();
 
@@ -1107,8 +1304,8 @@ async function publishToInstagram(post, env, profileConfig) {
       return { ok: false, error: "ig_media_error", detail: statusData };
     }
 
-    if (attempt < maxAttempts) {
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (attempt < maxStatusAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, statusDelayMs));
     }
   }
 
@@ -1120,31 +1317,63 @@ async function publishToInstagram(post, env, profileConfig) {
     return { ok: false, error: "ig_not_ready", creationId, statusCode };
   }
 
-  // 3) Publish the media
+  // Small extra wait – even when status says FINISHED, IG sometimes needs a bit
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  // 3) Publish the media with retries for "media not ready" (code 9007 / subcode 2207027)
   const publishUrl = `https://graph.facebook.com/v19.0/${igUserId}/media_publish`;
 
   const publishParams = new URLSearchParams();
   publishParams.set("creation_id", creationId);
   publishParams.set("access_token", token);
 
-  const publishRes = await fetch(publishUrl, {
-    method: "POST",
-    body: publishParams,
-  });
+  const maxPublishAttempts = 3;
+  const publishDelayMs = 2000;
 
-  const publishText = await publishRes.text();
-  if (!publishRes.ok) {
+  for (let attempt = 1; attempt <= maxPublishAttempts; attempt++) {
+    const publishRes = await fetch(publishUrl, {
+      method: "POST",
+      body: publishParams,
+    });
+
+    const publishText = await publishRes.text();
+
+    if (publishRes.ok) {
+      console.log("IG publish OK:", publishText);
+      let publishData;
+      try {
+        publishData = JSON.parse(publishText);
+      } catch {
+        publishData = { raw: publishText };
+      }
+      return { ok: true, data: publishData };
+    }
+
+    // Try to detect the "media not ready yet" error and retry
+    let errJson;
+    try {
+      errJson = JSON.parse(publishText);
+    } catch {
+      errJson = null;
+    }
+
+    const errCode = errJson?.error?.code;
+    const errSubcode = errJson?.error?.error_subcode;
+
+    if (errCode === 9007 || errSubcode === 2207027) {
+      console.warn(
+        `IG publish not ready (code=${errCode}, subcode=${errSubcode}), attempt ${attempt} of ${maxPublishAttempts}`
+      );
+      if (attempt < maxPublishAttempts) {
+        await new Promise((resolve) => setTimeout(resolve, publishDelayMs));
+        continue;
+      }
+    }
+
     console.error("IG publish error:", publishRes.status, publishText);
     return { ok: false, error: "ig_publish_error", detail: publishText };
   }
 
-  console.log("IG publish OK:", publishText);
-  let publishData;
-  try {
-    publishData = JSON.parse(publishText);
-  } catch {
-    publishData = { raw: publishText };
-  }
-
-  return { ok: true, data: publishData };
+  // Fallback (should not hit)
+  return { ok: false, error: "ig_publish_error", detail: "Unknown IG publish failure" };
 }
