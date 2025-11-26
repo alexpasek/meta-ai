@@ -152,11 +152,27 @@ const IMAGE_LAYOUTS = [
   { value: "banner", label: "Banner graphic (headline + phone + website)" },
 ];
 
+const BRAND_OVERLAY_OPTIONS = {
+  epf: [
+    "/overlays/epf/epf.PNG",
+    "/overlays/epf/epf115CA6BE9-E6C2-4806-ACA1-DEB13513CE16.PNG",
+    "/overlays/epf/epf1DBD203F6-11D3-4E5C-B0D0-32AE9817D575.PNG",
+  ],
+  calgary: [
+    "/overlays/calgary/calgary.PNG",
+    "/overlays/calgary/ChatGPT Image Nov 26, 2025, 12_26_05 AM.png",
+  ],
+};
+
 const BANNER_STYLE_OPTIONS = [
   { value: "gentle", label: "Soft gradient (recommended)" },
+  { value: "promo", label: "Promo bar (bold red)" },
   { value: "bold", label: "Bold red CTA" },
   { value: "darkglass", label: "Dark glass strip" },
   { value: "split", label: "Split bars (light top, dark footer)" },
+  { value: "clean", label: "Clean white footer" },
+  { value: "accent", label: "Teal accent bar" },
+  { value: "brandpng", label: "Brand PNG overlay (auto)" },
 ];
 
 // Neighbourhood pools for rotation (you can extend anytime)
@@ -524,6 +540,36 @@ function loadImageFromFile(file) {
   });
 }
 
+function loadImageFromUrl(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => resolve(img);
+    img.onerror = (err) => reject(err);
+    img.src = url;
+  });
+}
+
+function getOverlayOptionsForProfile(profileKey) {
+  const key = (profileKey || "").toLowerCase();
+  const staticList = BRAND_OVERLAY_OPTIONS[key] || [];
+  return staticList.map((url) => {
+    const name = url.split("/").pop() || url;
+    const encodedUrl = encodeURI(url);
+    return { id: url, url: encodedUrl, label: name };
+  });
+}
+
+function getBrandOverlayUrl(profileKey, overlayId) {
+  const opts = getOverlayOptionsForProfile(profileKey);
+  if (!opts.length) return null;
+  if (overlayId) {
+    const found = opts.find((o) => o.id === overlayId);
+    if (found) return found.url;
+  }
+  return opts[0].url;
+}
+
 /**
  * Make sure image is safe for Instagram Graph API:
  * - JPEG
@@ -822,7 +868,10 @@ function buildBannerOverlay(draft, profile) {
   }
 
   const websiteRaw = profile.website || "";
-  const websiteClean = websiteRaw.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  const domainFromMap = PROFILE_DOMAINS?.[draft.profileKey] || "";
+  const websiteClean = (domainFromMap || websiteRaw)
+    .replace(/^https?:\/\//, "")
+    .replace(/\/$/, "");
   const footerLeft = profile.brand || "Your company";
   const footerRight = websiteClean || profile.city || "";
 
@@ -839,6 +888,10 @@ function PostPreview({ draft, profile }) {
     draft.imageLayout === "banner" ? buildBannerOverlay(draft, profile) : null;
   const bannerStyle = draft.bannerStyle || "bold";
   const brandInitial = (profile.brand || "E").charAt(0);
+  const brandOverlayUrl =
+    draft.bannerStyle === "brandpng"
+      ? getBrandOverlayUrl(draft.profileKey, draft.overlayId)
+      : null;
 
   return (
     <div className="post-preview">
@@ -856,20 +909,41 @@ function PostPreview({ draft, profile }) {
             alt={draft.file?.name || "Preview"}
             className="post-preview-image"
           />
-          {bannerOverlay && (
-            <div className={`banner-overlay banner-style-${bannerStyle}`}>
-              <div className="banner-logo">
-                <div className="banner-logo-circle">{brandInitial}</div>
+                      {bannerOverlay && (
+            bannerStyle === "brandpng" && brandOverlayUrl ? (
+              <div
+                className="brandpng-overlay"
+                style={{ backgroundImage: `url(${brandOverlayUrl})` }}
+              />
+            ) : bannerStyle === "promo" ? (
+              <div className={`banner-overlay banner-style-${bannerStyle}`}>
+                <div className="promo-bar">
+                  <div className="promo-logo-circle">{brandInitial}</div>
+                  <div className="promo-text">
+                    <div className="promo-title">{bannerOverlay.headline}</div>
+                    <div className="promo-subtitle">{bannerOverlay.subline}</div>
+                  </div>
+                  <div className="promo-contact">
+                    <div className="promo-contact-line">{bannerOverlay.footerLeft}</div>
+                    <div className="promo-contact-line">{bannerOverlay.footerRight}</div>
+                  </div>
+                </div>
               </div>
-              <div className="banner-top">
-                <div className="banner-headline">{bannerOverlay.headline}</div>
-                <div className="banner-subline">{bannerOverlay.subline}</div>
+            ) : (
+              <div className={`banner-overlay banner-style-${bannerStyle}`}>
+                <div className="banner-logo">
+                  <div className="banner-logo-circle">{brandInitial}</div>
+                </div>
+                <div className="banner-top">
+                  <div className="banner-headline">{bannerOverlay.headline}</div>
+                  <div className="banner-subline">{bannerOverlay.subline}</div>
+                </div>
+                <div className="banner-bottom">
+                  <div className="banner-brand">{bannerOverlay.footerLeft}</div>
+                  <div className="banner-cta">{bannerOverlay.footerRight}</div>
+                </div>
               </div>
-              <div className="banner-bottom">
-                <div className="banner-brand">{bannerOverlay.footerLeft}</div>
-                <div className="banner-cta">{bannerOverlay.footerRight}</div>
-              </div>
-            </div>
+            )
           )}
         </div>
       )}
@@ -991,6 +1065,7 @@ function App() {
         imageLayout: "photo",
         postType: "feed",
         bannerStyle: "gentle",
+        overlayId: "",
       };
     });
     setFiles((prev) => [...prev, ...mapped]);
@@ -1335,15 +1410,224 @@ ${extraDifferent}
         imageLayout: "photo",
         postType: "feed",
         bannerStyle: "gentle",
+        overlayId: "",
       },
     ]);
+  }
+
+  const BANNER_DRAW_STYLES = {
+    gentle: {
+      top: { type: "gradient", from: "rgba(15,23,42,0.55)", to: "rgba(15,23,42,0)" },
+      bottom: { color: "rgba(0,0,0,0.6)" },
+      textColor: "#f8fafc",
+      footerColor: "#e5e7eb",
+    },
+    promo: {
+      top: {
+        type: "gradient",
+        from: "rgba(0,0,0,0)",
+        to: "rgba(0,0,0,0.55)",
+      },
+      bottom: { color: "rgba(214,0,0,0.95)" },
+      textColor: "#ffffff",
+      footerColor: "#ffffff",
+    },
+    bold: {
+      top: { color: "rgba(220,38,38,0.9)" },
+      bottom: { color: "rgba(17,24,39,0.82)" },
+      textColor: "#fff",
+      footerColor: "#f8fafc",
+    },
+    darkglass: {
+      top: { color: "rgba(15,23,42,0.58)" },
+      bottom: { color: "rgba(0,0,0,0.55)" },
+      textColor: "#f8fafc",
+      footerColor: "#e5e7eb",
+    },
+    split: {
+      top: { color: "rgba(248,250,252,0.9)" },
+      bottom: { color: "rgba(15,23,42,0.88)" },
+      textColor: "#0f172a",
+      footerColor: "#e2e8f0",
+      subColor: "#334155",
+    },
+    clean: {
+      top: { type: "gradient", from: "rgba(15,23,42,0.35)", to: "rgba(15,23,42,0.05)" },
+      bottom: { color: "rgba(255,255,255,0.92)" },
+      textColor: "#0f172a",
+      footerColor: "#0f172a",
+      subColor: "#475569",
+    },
+    accent: {
+      top: { type: "gradient", from: "rgba(13,148,136,0.6)", to: "rgba(13,148,136,0.05)" },
+      bottom: { color: "rgba(13,148,136,0.9)" },
+      textColor: "#ecfeff",
+      footerColor: "#e0f2f1",
+      subColor: "#c7f7f2",
+    },
+    brandpng: {
+      overlayByProfile: {
+        epf: "/overlays/epf.PNG",
+        calgary: "/overlays/calgary.PNG",
+      },
+    },
+  };
+
+  function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+    const words = text.split(" ");
+    let line = "";
+    for (let n = 0; n < words.length; n++) {
+      const testLine = line + words[n] + " ";
+      const metrics = ctx.measureText(testLine);
+      if (metrics.width > maxWidth && n > 0) {
+        ctx.fillText(line.trim(), x, y);
+        line = words[n] + " ";
+        y += lineHeight;
+      } else {
+        line = testLine;
+      }
+    }
+    if (line.trim()) ctx.fillText(line.trim(), x, y);
+  }
+
+  async function bakeBannerImage(draft) {
+    const profile = PROFILE_CONFIG[draft.profileKey] || PROFILE_CONFIG.calgary;
+    const style = BANNER_DRAW_STYLES[draft.bannerStyle || "gentle"] || BANNER_DRAW_STYLES.gentle;
+
+    const img = await loadImageFromFile(draft.file);
+    const canvas = document.createElement("canvas");
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext("2d");
+
+    ctx.drawImage(img, 0, 0);
+
+    // Optional PNG overlay (profile-specific)
+    let overlayImg = null;
+    const overlayUrl = draft.bannerStyle === "brandpng"
+      ? getBrandOverlayUrl(draft.profileKey, draft.overlayId)
+      : null;
+    if (overlayUrl) {
+      try {
+        overlayImg = await loadImageFromUrl(overlayUrl);
+      } catch (err) {
+        console.warn("Failed to load overlay PNG", overlayUrl, err);
+      }
+    }
+
+    if (overlayImg) {
+      // Draw photo already placed; scale overlay to fully fit (no cropping)
+      const scale = Math.min(canvas.width / overlayImg.width, canvas.height / overlayImg.height);
+      const ow = overlayImg.width * scale;
+      const oh = overlayImg.height * scale;
+      const ox = (canvas.width - ow) / 2;
+      const oy = (canvas.height - oh) / 2;
+      ctx.drawImage(overlayImg, ox, oy, ow, oh);
+    } else {
+      const overlay = buildBannerOverlay(draft, profile);
+      const topHeight = Math.round(canvas.height * 0.18);
+      const bottomHeight = Math.round(canvas.height * 0.12);
+
+      // Top bar
+      if (style.top?.type === "gradient") {
+        const grad = ctx.createLinearGradient(0, 0, 0, topHeight);
+        grad.addColorStop(0, style.top.from);
+        grad.addColorStop(1, style.top.to);
+        ctx.fillStyle = grad;
+      } else {
+        ctx.fillStyle = style.top?.color || "rgba(0,0,0,0.6)";
+      }
+      ctx.fillRect(0, 0, canvas.width, topHeight);
+
+      // Bottom bar
+      ctx.fillStyle = style.bottom?.color || "rgba(0,0,0,0.7)";
+      ctx.fillRect(0, canvas.height - bottomHeight, canvas.width, bottomHeight);
+
+      // Logo bubble
+      const logoSize = Math.max(26, Math.round(canvas.width * 0.04));
+      const logoX = canvas.width - logoSize - 12;
+      const logoY = 12;
+      ctx.fillStyle = "rgba(0,0,0,0.65)";
+      ctx.beginPath();
+      ctx.arc(logoX + logoSize / 2, logoY + logoSize / 2, logoSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.font = `bold ${Math.round(logoSize * 0.55)}px sans-serif`;
+      ctx.textBaseline = "middle";
+      ctx.textAlign = "center";
+      ctx.fillText((profile.brand || "E").charAt(0), logoX + logoSize / 2, logoY + logoSize / 2 + 1);
+
+      // Text setup
+      ctx.fillStyle = style.textColor || "#fff";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+
+      const padding = Math.round(canvas.width * 0.04);
+      const maxWidth = canvas.width - padding * 2 - logoSize;
+
+      ctx.font = `bold ${Math.round(canvas.width * 0.045)}px sans-serif`;
+      wrapText(ctx, overlay.headline, padding, padding, maxWidth, Math.round(canvas.width * 0.05));
+
+      ctx.fillStyle = style.subColor || style.textColor || "#fff";
+      ctx.font = `600 ${Math.round(canvas.width * 0.03)}px sans-serif`;
+      wrapText(
+        ctx,
+        overlay.subline,
+        padding,
+        padding + Math.round(canvas.width * 0.07),
+        maxWidth,
+        Math.round(canvas.width * 0.04)
+      );
+
+      // Footer
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = style.footerColor || "#f8fafc";
+      ctx.font = `700 ${Math.round(canvas.width * 0.032)}px sans-serif`;
+      const footerY = canvas.height - bottomHeight / 2;
+      ctx.fillText(overlay.footerLeft, padding, footerY);
+
+      ctx.textAlign = "right";
+      ctx.font = `600 ${Math.round(canvas.width * 0.03)}px sans-serif`;
+      ctx.fillText(overlay.footerRight, canvas.width - padding, footerY);
+    }
+
+    const blob = await new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (b) => {
+          if (!b) return reject(new Error("Failed to render banner"));
+          resolve(b);
+        },
+        "image/jpeg",
+        0.9
+      );
+    });
+
+    const name =
+      (draft.file.name || "banner")
+        .replace(/\.[^.]+$/, "") + "-banner.jpg";
+
+    return new File([blob], name, { type: "image/jpeg" });
   }
 
   async function uploadFile(draft) {
     if (!draft.file) return null;
 
+    let fileToSend = draft.file;
+
+    if (draft.imageLayout === "banner") {
+      try {
+        const baked = await bakeBannerImage(draft);
+        if (baked) {
+          fileToSend = baked;
+        }
+      } catch (err) {
+        console.warn("Banner bake failed, sending original file", err);
+      }
+    }
+
     // Make image IG-safe before sending to backend
-    const processedFile = await prepareInstagramSafeImage(draft.file);
+    const processedFile = await prepareInstagramSafeImage(fileToSend);
 
     const formData = new FormData();
     formData.append("file", processedFile);
@@ -1666,6 +1950,7 @@ ${extraDifferent}
                     imageLayout: "photo",
                     postType: "feed",
                     bannerStyle: "gentle",
+                    overlayId: "",
                   });
                 }
 
@@ -1752,21 +2037,6 @@ ${extraDifferent}
                           Remove
                         </button>
                       </div>
-
-                      {/* Service */}
-                      <label className="field">
-                        <span>Service</span>
-                        <select
-                          value={draft.serviceType}
-                          onChange={(e) => updateDraft(draft.id, { serviceType: e.target.value })}
-                        >
-                          {SERVICE_OPTIONS.map((opt) => (
-                            <option key={opt.id} value={opt.id}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
 
                       {/* Mode */}
                       <label className="field">
@@ -1884,7 +2154,13 @@ ${extraDifferent}
                         <span>Image layout</span>
                         <select
                           value={draft.imageLayout || "photo"}
-                          onChange={(e) => updateDraft(draft.id, { imageLayout: e.target.value })}
+                          onChange={(e) => {
+                            const imageLayout = e.target.value;
+                            updateDraft(draft.id, {
+                              imageLayout,
+                              postType: imageLayout === "banner" ? "banner" : "feed",
+                            });
+                          }}
                         >
                           {IMAGE_LAYOUTS.map((l) => (
                             <option key={l.value} value={l.value}>
@@ -1910,6 +2186,21 @@ ${extraDifferent}
                                 ))}
                               </select>
                             </label>
+                            {draft.bannerStyle === "brandpng" && (
+                              <label className="field">
+                                <span>Overlay image (auto-detected)</span>
+                                <select
+                                  value={draft.overlayId || getOverlayOptionsForProfile(draft.profileKey)[0]?.id || ""}
+                                  onChange={(e) => updateDraft(draft.id, { overlayId: e.target.value })}
+                                >
+                                  {getOverlayOptionsForProfile(draft.profileKey).map((opt) => (
+                                    <option key={opt.id} value={opt.id}>
+                                      {opt.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            )}
                           </>
                         )}
                       </label>
@@ -1929,7 +2220,17 @@ ${extraDifferent}
 
                         <select
                           value={draft.postType || "feed"}
-                          onChange={(e) => updateDraft(draft.id, { postType: e.target.value })}
+                          onChange={(e) => {
+                            const postType = e.target.value;
+                            const next = { postType };
+                            // Sync layout with post type for clearer behavior
+                            if (postType === "banner") {
+                              next.imageLayout = "banner";
+                            } else {
+                              next.imageLayout = "photo";
+                            }
+                            updateDraft(draft.id, next);
+                          }}
                         >
                           <option value="feed">Regular feed photo</option>
                           <option value="banner">Banner / promo graphic</option>

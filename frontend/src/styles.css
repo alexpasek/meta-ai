@@ -333,6 +333,15 @@ h3 {
   overflow: hidden;
 }
 
+.brandpng-overlay {
+  position: absolute;
+  inset: 0;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  pointer-events: none;
+}
+
 .banner-overlay {
   position: absolute;
   inset: 0;
@@ -401,6 +410,99 @@ h3 {
   opacity: 0.9;
 }
 
+.banner-style-promo {
+  justify-content: flex-end;
+  align-items: stretch;
+  background: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0) 55%,
+    rgba(0, 0, 0, 0.55) 80%,
+    rgba(0, 0, 0, 0.8) 100%
+  );
+}
+
+.promo-bar {
+  background: #d60000;
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px 14px;
+  align-items: center;
+  color: #ffffff;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
+}
+
+.promo-logo-circle {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: #ff2a2a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  color: #fff;
+  border: 2px solid rgba(0, 0, 0, 0.3);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+}
+
+.promo-text {
+  line-height: 1.2;
+}
+
+.promo-title {
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 0.95rem;
+}
+
+.promo-subtitle {
+  font-size: 0.8rem;
+  opacity: 0.95;
+  margin-top: 2px;
+}
+
+.promo-contact {
+  text-align: right;
+  font-size: 0.8rem;
+  line-height: 1.25;
+}
+
+.promo-contact-line strong {
+  font-weight: 800;
+}
+
+@media (max-width: 480px) {
+  .banner-style-promo .promo-bar {
+    grid-template-columns: 1fr;
+    text-align: left;
+  }
+  .promo-contact {
+    text-align: left;
+  }
+}
+@media (max-width: 640px) {
+    .draft-card {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .draft-image {
+        width: 100%;
+        max-height: 220px;
+    }
+
+    .draft-body {
+        width: 100%;
+    }
+
+    .draft-row {
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+}
 /* Banner styles */
 .banner-style-bold .banner-top {
   background: linear-gradient(90deg, rgba(220, 38, 38, 0.92), rgba(239, 68, 68, 0.9));
@@ -409,6 +511,37 @@ h3 {
 .banner-style-bold .banner-bottom {
   background: rgba(17, 24, 39, 0.82);
   color: #f8fafc;
+}
+
+.banner-style-clean .banner-top {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.35), rgba(15, 23, 42, 0.05));
+  color: #0f172a;
+  text-shadow: none;
+}
+
+.banner-style-clean .banner-subline {
+  color: #475569;
+  opacity: 1;
+}
+
+.banner-style-clean .banner-bottom {
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+}
+
+.banner-style-accent .banner-top {
+  background: linear-gradient(180deg, rgba(13, 148, 136, 0.6), rgba(13, 148, 136, 0.05));
+  color: #ecfeff;
+}
+
+.banner-style-accent .banner-subline {
+  color: #c7f7f2;
+  opacity: 1;
+}
+
+.banner-style-accent .banner-bottom {
+  background: rgba(13, 148, 136, 0.9);
+  color: #e0f2f1;
 }
 
 .banner-style-gentle .banner-top {

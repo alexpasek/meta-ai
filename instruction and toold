@@ -56,3 +56,35 @@ const PROFILE_CONFIG = {
     brand: "Alpha Drywall Finishing",
   },
 };
+
+========================
+Quick guide: add a new profile/account (end-to-end)
+========================
+
+1) Cloudflare secrets (backend)
+   - Replace KEY with your profile (e.g., alpha → ALPHA):
+     npx wrangler secret put META_PAGE_ID_KEY
+     npx wrangler secret put META_PAGE_ACCESS_TOKEN_KEY
+     npx wrangler secret put META_IG_USER_ID_KEY
+     npx wrangler secret put META_IG_ACCESS_TOKEN_KEY
+   - Values come from Graph Explorer/API as usual.
+
+2) Frontend config (App.jsx)
+   - Add to PROFILE_CONFIG with: key, label, city, seoLocation, website, brand.
+   - Add domain to PROFILE_DOMAINS so captions/footers use the right URL.
+   - (Optional) Add service URLs/Link pools (SERVICE_URLS/LINK_POOLS) if you have SEO pages.
+   - (Optional) Add hashtags for the profile (HASHTAG_CONFIG/HASHTAG_SETS).
+
+3) Banner overlays (PNG)
+   - Drop PNGs under frontend/public/overlays/<profileKey>/ (e.g., overlays/alpha/hero.png).
+   - The “Brand PNG overlay (auto)” style will auto-list new files for that profile; pick one in the draft card.
+
+4) Redeploy
+   - Backend (if code changed): npx wrangler publish
+   - Frontend: VITE_API_BASE_URL=https://meta-ai-scheduler-backend.webtoronto22.workers.dev npm run build
+               npx wrangler pages deploy dist --project-name=meta-ai-scheduler-ui
+
+5) Sanity checks
+   - In the app, Token helper → “Check tokens” for the new profile.
+   - Tail logs: npx wrangler tail meta-ai-scheduler-backend
+   - Manual scheduler run: curl -X POST https://meta-ai-scheduler-backend.webtoronto22.workers.dev/api/scheduler/run
