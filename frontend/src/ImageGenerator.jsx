@@ -1,12 +1,19 @@
 // frontend/src/ImageGenerator.jsx
 import React, { useState } from "react";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+const ENV_API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
-export default function ImageGenerator({ onImageGenerated, makeHeaders }) {
+function defaultApiUrl(path) {
+  if (!ENV_API_BASE) return path;
+  const normalized = ENV_API_BASE.replace(/\/+$/, "");
+  return `${normalized}${path}`;
+}
+
+export default function ImageGenerator({ onImageGenerated, makeHeaders, buildApiUrl }) {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const apiUrl = buildApiUrl || defaultApiUrl;
 
   async function handleGenerate() {
     if (!prompt.trim()) return;
@@ -18,7 +25,7 @@ export default function ImageGenerator({ onImageGenerated, makeHeaders }) {
         typeof makeHeaders === "function"
           ? makeHeaders({ "Content-Type": "application/json" })
           : { "Content-Type": "application/json" };
-      const res = await fetch(`${API_BASE}/api/ai/image`, {
+      const res = await fetch(apiUrl("/api/ai/image"), {
         method: "POST",
         headers,
         body: JSON.stringify({ prompt }),

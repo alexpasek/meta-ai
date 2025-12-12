@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from "react";
 import ImageGenerator from "./ImageGenerator";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+const ENV_API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
 const PROFILE_CONFIG = {
   calgary: {
@@ -63,6 +63,10 @@ const PROFILE_LINK_POOLS = {
     "https://wallpaperremovalpro.com/service-areas/mississauga",
   ],
 };
+
+function getArrayOrNull(value) {
+  return Array.isArray(value) && value.length ? value : null;
+}
 
 function pickProfileUrl(profileKey) {
   const pool = PROFILE_LINK_POOLS[profileKey] || [];
@@ -413,7 +417,7 @@ const LINK_POOLS = {
   },
   epf: {
     popcorn: [
-      "https://epfproservices.com/popcorn-ceiling-removal",
+      "https://epfproservices.com/",
       // later:
       // "https://epfproservices.com/locations/popcorn-ceiling-removal-mississauga",
       // "https://epfproservices.com/locations/popcorn-ceiling-removal-oakville",
@@ -479,17 +483,16 @@ function normalizeCaptionBody(body) {
 }
 
 function getRandomServiceUrl(profileKey, serviceType) {
+  const overrides = linkOverridesCache[profileKey] || {};
   const profilePools = LINK_POOLS[profileKey] || {};
   const servicePools = SERVICE_URLS[profileKey] || {};
   const profileCfg = PROFILE_CONFIG[profileKey];
 
-  const servicePool = profilePools[serviceType];
-  const defaultPool = profilePools.default;
+  const servicePool =
+    getArrayOrNull(overrides[serviceType]) || getArrayOrNull(profilePools[serviceType]);
+  const defaultPool = getArrayOrNull(overrides.default) || getArrayOrNull(profilePools.default);
 
-  const chosenPool =
-    (Array.isArray(servicePool) && servicePool.length && servicePool) ||
-    (Array.isArray(defaultPool) && defaultPool.length && defaultPool) ||
-    null;
+  const chosenPool = servicePool || defaultPool;
 
   if (chosenPool) {
     const picked = pickRandom(chosenPool);
@@ -523,6 +526,35 @@ function extractSingleCaptionBody(text) {
 
 const PROFILE_OPTIONS = Object.entries(PROFILE_CONFIG).map(([key, value]) => ({ key, ...value }));
 const DEFAULT_PROFILE_KEY = PROFILE_OPTIONS[0]?.key || "calgary";
+const API_BASE_STORAGE_KEY = "apiBaseOverride";
+const DEFAULT_DRAFT_PROFILE_STORAGE_KEY = "draftDefaultProfile";
+const DEFAULT_DRAFT_SERVICE_STORAGE_KEY = "draftDefaultService";
+const LINK_OVERRIDE_STORAGE_KEY = "linkOverrides_v1";
+const OVERLAY_OVERRIDE_STORAGE_KEY = "overlayOverrides_v1";
+
+let overlayOverridesCache = {};
+function setOverlayOverridesCache(next) {
+  overlayOverridesCache = next || {};
+}
+
+let linkOverridesCache = {};
+function setLinkOverridesCache(next) {
+  linkOverridesCache = next || {};
+}
+
+function getStoredDefaultProfile() {
+  if (typeof window === "undefined") return DEFAULT_PROFILE_KEY;
+  return window.localStorage.getItem(DEFAULT_DRAFT_PROFILE_STORAGE_KEY) || DEFAULT_PROFILE_KEY;
+}
+
+function getStoredDefaultService() {
+  if (typeof window === "undefined") return "popcorn";
+  return window.localStorage.getItem(DEFAULT_DRAFT_SERVICE_STORAGE_KEY) || "popcorn";
+}
+
+function getServiceLabel(value) {
+  return SERVICE_LABELS[value] || SERVICE_LABELS.popcorn;
+}
 
 // --- IG-SAFE IMAGE HELPERS ---
 
@@ -553,7 +585,9 @@ function loadImageFromUrl(url) {
 function getOverlayOptionsForProfile(profileKey) {
   const key = (profileKey || "").toLowerCase();
   const staticList = BRAND_OVERLAY_OPTIONS[key] || [];
-  return staticList.map((url) => {
+  const overrideList = overlayOverridesCache[key] || [];
+  const combined = [...overrideList, ...staticList];
+  return combined.map((url) => {
     const name = url.split("/").pop() || url;
     const encodedUrl = encodeURI(url);
     return { id: url, url: encodedUrl, label: name };
@@ -979,14 +1013,16 @@ function App() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [hidePosted, setHidePosted] = useState(false);
   const [openLogId, setOpenLogId] = useState(null);
-  const [profileCheckKey, setProfileCheckKey] = useState(DEFAULT_PROFILE_KEY);
+  const [draftDefaultProfile, setDraftDefaultProfile] = useState(() => getStoredDefaultProfile());
+  const [draftDefaultService, setDraftDefaultService] = useState(() => getStoredDefaultService());
+  const [profileCheckKey, setProfileCheckKey] = useState(() => getStoredDefaultProfile());
   const [profileCheckResult, setProfileCheckResult] = useState(null);
   const [profileCheckError, setProfileCheckError] = useState("");
   const [profileCheckLoading, setProfileCheckLoading] = useState(false);
   const [profileStatus, setProfileStatus] = useState({});
   const [profileCheckingKey, setProfileCheckingKey] = useState(null);
   const [fullAutoLoading, setFullAutoLoading] = useState(false);
-  const [planProfileKey, setPlanProfileKey] = useState("calgary");
+  const [planProfileKey, setPlanProfileKey] = useState(() => getStoredDefaultProfile());
   const [planDays, setPlanDays] = useState("30");
   const [planServices, setPlanServices] = useState({
     popcorn: true,
@@ -994,6 +1030,53 @@ function App() {
     painting: false,
     wallpaper: false,
     baseboard: false,
+  });
+  const [captionScheduleFrequency, setCaptionScheduleFrequency] = useState("1");
+  const [captionShuffleWindows, setCaptionShuffleWindows] = useState(true);
+  const [linkOverrides, setLinkOverrides] = useState(() => {
+    if (typeof window === "undefined") {
+      setLinkOverridesCache({});
+      return {};
+    }
+    try {
+      const raw = window.localStorage.getItem(LINK_OVERRIDE_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      setLinkOverridesCache(parsed);
+      return parsed;
+    } catch {
+      setLinkOverridesCache({});
+      return {};
+    }
+  });
+  const [linkEditorProfile, setLinkEditorProfile] = useState(DEFAULT_PROFILE_KEY);
+  const [linkEditorService, setLinkEditorService] = useState("default");
+  const [linkEditorValue, setLinkEditorValue] = useState("");
+  const [overlayOverrides, setOverlayOverrides] = useState(() => {
+    if (typeof window === "undefined") {
+      setOverlayOverridesCache({});
+      return {};
+    }
+    try {
+      const raw = window.localStorage.getItem(OVERLAY_OVERRIDE_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      setOverlayOverridesCache(parsed);
+      return parsed;
+    } catch {
+      setOverlayOverridesCache({});
+      return {};
+    }
+  });
+  const [overlayEditorProfile, setOverlayEditorProfile] = useState(DEFAULT_PROFILE_KEY);
+  const [overlayEditorValue, setOverlayEditorValue] = useState("");
+  const [linkSaveNotice, setLinkSaveNotice] = useState("");
+  const [overlaySaveNotice, setOverlaySaveNotice] = useState("");
+  const [apiBaseOverride, setApiBaseOverride] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return window.localStorage.getItem(API_BASE_STORAGE_KEY) || "";
+  });
+  const [apiBaseInput, setApiBaseInput] = useState(() => {
+    if (typeof window === "undefined") return "";
+    return window.localStorage.getItem(API_BASE_STORAGE_KEY) || "";
   });
 
   const profileLatest = React.useMemo(() => {
@@ -1010,6 +1093,18 @@ function App() {
   }, [scheduledPosts]);
 
   const tokenHealth = React.useMemo(() => computeTokenHealth(scheduledPosts), [scheduledPosts]);
+  const trimmedApiOverride = (apiBaseOverride || "").trim();
+  const effectiveApiBase = trimmedApiOverride || ENV_API_BASE || "";
+  const apiUrl = React.useCallback(
+    (path) => {
+      if (!effectiveApiBase) return path;
+      const normalizedBase = effectiveApiBase.replace(/\/+$/, "");
+      return `${normalizedBase}${path}`;
+    },
+    [effectiveApiBase]
+  );
+  const currentDefaultProfileLabel = getProfileLabel(draftDefaultProfile);
+  const currentDefaultServiceLabel = getServiceLabel(draftDefaultService);
 
   useEffect(() => {
     if (accessKey) {
@@ -1017,9 +1112,100 @@ function App() {
     }
   }, [accessKey]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (apiBaseOverride && apiBaseOverride.trim().length) {
+      window.localStorage.setItem(API_BASE_STORAGE_KEY, apiBaseOverride.trim());
+    } else {
+      window.localStorage.removeItem(API_BASE_STORAGE_KEY);
+    }
+  }, [apiBaseOverride]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(LINK_OVERRIDE_STORAGE_KEY, JSON.stringify(linkOverrides));
+    }
+    setLinkOverridesCache(linkOverrides);
+  }, [linkOverrides]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(OVERLAY_OVERRIDE_STORAGE_KEY, JSON.stringify(overlayOverrides));
+    }
+    setOverlayOverridesCache(overlayOverrides);
+  }, [overlayOverrides]);
+
+  useEffect(() => {
+    if (!linkSaveNotice) return;
+    const timer = setTimeout(() => setLinkSaveNotice(""), 2500);
+    return () => clearTimeout(timer);
+  }, [linkSaveNotice]);
+
+  useEffect(() => {
+    if (!overlaySaveNotice) return;
+    const timer = setTimeout(() => setOverlaySaveNotice(""), 2500);
+    return () => clearTimeout(timer);
+  }, [overlaySaveNotice]);
+
+  useEffect(() => {
+    setApiBaseInput(apiBaseOverride);
+  }, [apiBaseOverride]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(DEFAULT_DRAFT_PROFILE_STORAGE_KEY, draftDefaultProfile);
+  }, [draftDefaultProfile]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(DEFAULT_DRAFT_SERVICE_STORAGE_KEY, draftDefaultService);
+  }, [draftDefaultService]);
+
+  useEffect(() => {
+    const profileData = linkOverrides[linkEditorProfile] || {};
+    const list = profileData[linkEditorService] || [];
+    setLinkEditorValue(list.join("\n"));
+  }, [linkEditorProfile, linkEditorService, linkOverrides]);
+
+  useEffect(() => {
+    const list = overlayOverrides[overlayEditorProfile] || [];
+    setOverlayEditorValue(list.join("\n"));
+  }, [overlayEditorProfile, overlayOverrides]);
+
+  useEffect(() => {
+    setFiles((prev) =>
+      prev.map((draft) => {
+        if (draft.bannerStyle !== "brandpng") return draft;
+        const opts = getOverlayOptionsForProfile(draft.profileKey);
+        if (!opts.length) {
+          return draft.overlayId ? { ...draft, overlayId: "" } : draft;
+        }
+        const hasCurrent = draft.overlayId && opts.some((opt) => opt.id === draft.overlayId);
+        if (hasCurrent) return draft;
+        const firstId = opts[0].id;
+        if (draft.overlayId === firstId) return draft;
+        return { ...draft, overlayId: firstId };
+      })
+    );
+  }, [overlayOverrides]);
+
+  function describeApiBase() {
+    if (effectiveApiBase) return effectiveApiBase;
+    return "Local proxy (/api → http://localhost:8787)";
+  }
+
+  function handleApplyApiBase() {
+    setApiBaseOverride(apiBaseInput.trim());
+  }
+
+  function handleResetApiBase() {
+    setApiBaseOverride("");
+    setApiBaseInput("");
+  }
+
   async function loadScheduled() {
     try {
-      const res = await fetch(`${API_BASE}/api/posts`, {
+      const res = await fetch(apiUrl("/api/posts"), {
         headers: makeHeaders(),
       });
       if (res.status === 401) {
@@ -1039,8 +1225,8 @@ function App() {
 
   function handleFilesSelected(e) {
     const list = Array.from(e.target.files || []);
-    const defaultProfileKey = "calgary";
-    const defaultService = "popcorn";
+    const defaultProfileKey = draftDefaultProfile || DEFAULT_PROFILE_KEY;
+    const defaultService = draftDefaultService || "popcorn";
 
     const mapped = list.map((file) => {
       const hashtags = buildHashtags(defaultProfileKey, defaultService);
@@ -1087,9 +1273,78 @@ function App() {
     setFiles((prev) => prev.filter((f) => f.id !== id));
   }
 
-  function computeAutoScheduleForDrafts(drafts, autoStartValue, autoIntervalValue, profileLatestMap) {
-    const intervalDays = Number(autoIntervalValue) || 1;
-    const msPerDay = 24 * 60 * 60 * 1000;
+  function handleSetUploadDefaultsFromPlan() {
+    setDraftDefaultProfile(planProfileKey);
+  }
+
+  function normalizeListInput(value) {
+    return (value || "")
+      .split(/\n|,/)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length);
+  }
+
+  function writeLinkOverrides(profileKey, serviceType, entries) {
+    setLinkOverrides((prev) => {
+      const next = { ...prev };
+      const profileData = { ...(next[profileKey] || {}) };
+      if (!entries.length) {
+        delete profileData[serviceType];
+      } else {
+        profileData[serviceType] = entries;
+      }
+      if (Object.keys(profileData).length) {
+        next[profileKey] = profileData;
+      } else {
+        delete next[profileKey];
+      }
+      return next;
+    });
+  }
+
+  function handleSaveLinkOverrides() {
+    const entries = normalizeListInput(linkEditorValue);
+    writeLinkOverrides(linkEditorProfile, linkEditorService, entries);
+    setLinkEditorValue(entries.join("\n"));
+    setLinkSaveNotice("Saved");
+  }
+
+  function handleResetLinkOverrides() {
+    writeLinkOverrides(linkEditorProfile, linkEditorService, []);
+    setLinkEditorValue("");
+    setLinkSaveNotice("Reset to defaults");
+  }
+
+  function writeOverlayOverrides(profileKey, entries) {
+    setOverlayOverrides((prev) => {
+      const next = { ...prev };
+      if (!entries.length) {
+        delete next[profileKey];
+      } else {
+        next[profileKey] = entries;
+      }
+      return next;
+    });
+  }
+
+  function handleSaveOverlayOverrides() {
+    const entries = normalizeListInput(overlayEditorValue);
+    writeOverlayOverrides(overlayEditorProfile, entries);
+    setOverlayEditorValue(entries.join("\n"));
+    setOverlaySaveNotice("Saved");
+  }
+
+  function handleResetOverlayOverrides() {
+    writeOverlayOverrides(overlayEditorProfile, []);
+    setOverlayEditorValue("");
+    setOverlaySaveNotice("Reset to defaults");
+  }
+
+function computeAutoScheduleForDrafts(drafts, autoStartValue, autoIntervalValue, profileLatestMap, options = {}) {
+  const intervalDays = Number(autoIntervalValue) || 1;
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const shuffleEnabled = !!options.shuffleWindows;
+  const shuffleMinutesWindow = options.shuffleMinutesWindow ?? 120; // +/- window
 
     const grouped = {};
     for (const draft of drafts) {
@@ -1121,6 +1376,12 @@ function App() {
         const dt = new Date(baseDate.getTime() + pairIndex * intervalDays * msPerDay);
         if (!isFb) {
           dt.setHours(dt.getHours() + 3);
+        }
+
+        if (shuffleEnabled) {
+          const maxOffset = Math.max(15, shuffleMinutesWindow);
+          const offset = Math.floor(Math.random() * (maxOffset * 2 + 1)) - maxOffset;
+          dt.setMinutes(dt.getMinutes() + offset);
         }
 
         updatedById[draft.id] = {
@@ -1196,7 +1457,7 @@ Write ONLY the caption body text for a Facebook/Instagram post:
 ${extraDifferent}
 `;
 
-      const res = await fetch(`${API_BASE}/api/ai/caption`, {
+      const res = await fetch(apiUrl("/api/ai/caption"), {
         method: "POST",
         headers: makeHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({
@@ -1206,11 +1467,19 @@ ${extraDifferent}
         }),
       });
 
-      const data = await res.json();
+      let payloadText = "";
+      let data = null;
+      try {
+        payloadText = await res.text();
+        data = payloadText ? JSON.parse(payloadText) : {};
+      } catch (err) {
+        console.error("AI caption JSON parse error", err, payloadText);
+        throw new Error("AI caption failed: invalid JSON response");
+      }
 
       if (!res.ok || data.error || !data.text) {
-        const message = data?.error || `AI caption failed (${res.status})`;
-        throw new Error(message);
+        const detail = data?.error || payloadText || `status ${res.status}`;
+        throw new Error(`AI caption failed: ${detail}`);
       }
 
       const rawBody = (data.text || "").trim();
@@ -1308,7 +1577,7 @@ ${extraDifferent}
         serviceUrl,
       };
 
-      await fetch(`${API_BASE}/api/posts`, {
+      await fetch(apiUrl("/api/posts"), {
         method: "POST",
         headers: makeHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
@@ -1375,15 +1644,22 @@ ${extraDifferent}
           status: draft.status === "draft" || draft.status === "plan" ? "ready" : draft.status,
         });
       }
-      setFiles(updated);
+      const scheduled = computeAutoScheduleForDrafts(
+        updated,
+        "",
+        captionScheduleFrequency,
+        profileLatest,
+        { shuffleWindows: captionShuffleWindows }
+      );
+      setFiles(scheduled);
     } finally {
       setBulkCaptionLoading(false);
     }
   }
 
   function addAiDraft(url, prompt) {
-    const defaultProfileKey = "calgary";
-    const defaultService = "popcorn";
+    const defaultProfileKey = draftDefaultProfile || DEFAULT_PROFILE_KEY;
+    const defaultService = draftDefaultService || "popcorn";
     const hashtags = buildHashtags(defaultProfileKey, defaultService);
     const serviceUrl = getRandomServiceUrl(defaultProfileKey, defaultService);
 
@@ -1632,7 +1908,7 @@ ${extraDifferent}
     const formData = new FormData();
     formData.append("file", processedFile);
 
-    const res = await fetch(`${API_BASE}/api/upload`, {
+    const res = await fetch(apiUrl("/api/upload"), {
       method: "POST",
       headers: makeHeaders(),
       body: formData,
@@ -1688,7 +1964,7 @@ ${extraDifferent}
   async function handleCancel(id) {
     setCancelingId(id);
     try {
-      const res = await fetch(`${API_BASE}/api/posts/${id}/cancel`, {
+      const res = await fetch(apiUrl(`/api/posts/${id}/cancel`), {
         method: "POST",
         headers: makeHeaders(),
       });
@@ -1707,7 +1983,7 @@ ${extraDifferent}
   async function handlePostNow(id) {
     setPostingNowId(id);
     try {
-      const res = await fetch(`${API_BASE}/api/posts/${id}/publish-now`, {
+      const res = await fetch(apiUrl(`/api/posts/${id}/publish-now`), {
         method: "POST",
         headers: makeHeaders(),
       });
@@ -1726,7 +2002,7 @@ ${extraDifferent}
   async function handleRemove(id) {
     setRemovingId(id);
     try {
-      const res = await fetch(`${API_BASE}/api/posts/${id}`, {
+      const res = await fetch(apiUrl(`/api/posts/${id}`), {
         method: "DELETE",
         headers: makeHeaders(),
       });
@@ -1745,7 +2021,7 @@ ${extraDifferent}
   async function handleRetry(id) {
     setRetryingId(id);
     try {
-      const res = await fetch(`${API_BASE}/api/posts/${id}/retry`, {
+      const res = await fetch(apiUrl(`/api/posts/${id}/retry`), {
         method: "POST",
         headers: makeHeaders(),
       });
@@ -1764,7 +2040,7 @@ ${extraDifferent}
   async function handleCheckProfileStatus(profileKey) {
     try {
       setProfileCheckingKey(profileKey);
-      const res = await fetch(`${API_BASE}/api/meta/check-profile?key=${encodeURIComponent(profileKey)}`, {
+      const res = await fetch(apiUrl(`/api/meta/check-profile?key=${encodeURIComponent(profileKey)}`), {
         headers: makeHeaders(),
       });
       const data = await res.json();
@@ -1786,7 +2062,7 @@ ${extraDifferent}
     setProfileCheckResult(null);
 
     try {
-      const res = await fetch(`${API_BASE}/api/meta/check-profile`, {
+      const res = await fetch(apiUrl("/api/meta/check-profile"), {
         method: "POST",
         headers: makeHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ profileKey: profileCheckKey }),
@@ -1830,6 +2106,24 @@ ${extraDifferent}
           >
             Enter
           </button>
+          <hr className="section-divider" />
+          <h3>API connection</h3>
+          <p className="muted">Leave blank to use the local Vite proxy (/api → http://localhost:8787).</p>
+          <input
+            type="text"
+            placeholder="https://meta-ai-scheduler-backend.example.workers.dev"
+            value={apiBaseInput}
+            onChange={(e) => setApiBaseInput(e.target.value)}
+          />
+          <div className="button-row">
+            <button type="button" className="secondary" onClick={handleApplyApiBase}>
+              Save API URL
+            </button>
+            <button type="button" className="link-button" onClick={handleResetApiBase}>
+              Use default
+            </button>
+          </div>
+          <p className="muted small">Current target: {describeApiBase()}</p>
         </div>
       </div>
     );
@@ -1843,6 +2137,32 @@ ${extraDifferent}
       </header>
 
       <main className="app-main">
+        <section className="card connection-card">
+          <h2>Connection</h2>
+          <p className="muted">
+            API requests go to your Cloudflare Worker. Set the deployed URL when you are not running <code>npm run dev</code> in
+            <code>backend/</code>.
+          </p>
+          <label className="field">
+            <span>API base URL</span>
+            <input
+              type="text"
+              placeholder="https://meta-ai-scheduler-backend.example.workers.dev"
+              value={apiBaseInput}
+              onChange={(e) => setApiBaseInput(e.target.value)}
+            />
+          </label>
+          <div className="button-row">
+            <button type="button" className="secondary" onClick={handleApplyApiBase}>
+              Save API URL
+            </button>
+            <button type="button" className="link-button" onClick={handleResetApiBase}>
+              Use default (proxy)
+            </button>
+          </div>
+          <p className="muted small">Current target: {describeApiBase()}</p>
+        </section>
+
         <section className="card">
           <h2>1. Create content</h2>
           <p>Generate AI images or upload your own photos, then let AI write captions and schedule everything.</p>
@@ -1885,6 +2205,110 @@ ${extraDifferent}
                   <option value="3">Every 3 days</option>
                 </select>
               </label>
+            </div>
+            <div className="default-upload-panel">
+              <p className="muted small">
+                Upload defaults for new drafts: {currentDefaultProfileLabel} · {currentDefaultServiceLabel}.
+              </p>
+              <div className="default-upload-actions">
+                <button type="button" className="secondary" onClick={handleSetUploadDefaultsFromPlan}>
+                  Use selected profile
+                </button>
+                <label className="field compact-field">
+                  <span>Default service</span>
+                  <select
+                    value={draftDefaultService}
+                    onChange={(e) => setDraftDefaultService(e.target.value)}
+                  >
+                    {SERVICE_TYPES.map((svc) => (
+                      <option key={svc.value} value={svc.value}>
+                        {svc.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div className="config-panel">
+              <h3>CTA link pools</h3>
+              <p className="muted">
+                Update the rotation of URLs the AI captions use for a given profile + service. Leave blank to use the
+                built-in list.
+              </p>
+              <div className="plan-grid">
+                <label className="field">
+                  <span>Profile</span>
+                  <select value={linkEditorProfile} onChange={(e) => setLinkEditorProfile(e.target.value)}>
+                    {PROFILE_OPTIONS.map((opt) => (
+                      <option key={opt.key} value={opt.key}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Service</span>
+                  <select value={linkEditorService} onChange={(e) => setLinkEditorService(e.target.value)}>
+                    {[...SERVICE_TYPES, { value: "default", label: "Default fallback" }].map((svc) => (
+                      <option key={svc.value} value={svc.value}>
+                        {svc.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <label className="field">
+                <span>Links (one per line)</span>
+                <textarea
+                  rows={3}
+                  value={linkEditorValue}
+                  onChange={(e) => setLinkEditorValue(e.target.value)}
+                  placeholder="https://example.com/service"
+                />
+              </label>
+              <div className="button-row">
+                <button type="button" className="primary" onClick={handleSaveLinkOverrides}>
+                  Save links
+                </button>
+                <button type="button" className="secondary" onClick={handleResetLinkOverrides}>
+                  Reset to defaults
+                </button>
+              </div>
+              {linkSaveNotice && <p className="success-text small">{linkSaveNotice}</p>}
+            </div>
+            <div className="config-panel">
+              <h3>Overlay PNGs</h3>
+              <p className="muted">
+                Add fully-qualified image URLs to use with the “Brand PNG overlay” style. Each URL should be a transparent PNG sized for social media.
+              </p>
+              <label className="field">
+                <span>Profile</span>
+                <select value={overlayEditorProfile} onChange={(e) => setOverlayEditorProfile(e.target.value)}>
+                  {PROFILE_OPTIONS.map((opt) => (
+                    <option key={opt.key} value={opt.key}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Overlay URLs (one per line)</span>
+                <textarea
+                  rows={3}
+                  value={overlayEditorValue}
+                  onChange={(e) => setOverlayEditorValue(e.target.value)}
+                  placeholder="https://example.com/assets/overlay.png"
+                />
+              </label>
+              <div className="button-row">
+                <button type="button" className="primary" onClick={handleSaveOverlayOverrides}>
+                  Save overlays
+                </button>
+                <button type="button" className="secondary" onClick={handleResetOverlayOverrides}>
+                  Reset to defaults
+                </button>
+              </div>
+              {overlaySaveNotice && <p className="success-text small">{overlaySaveNotice}</p>}
             </div>
             <div className="plan-services">
               <span className="field-label">Services to rotate</span>
@@ -1961,7 +2385,7 @@ ${extraDifferent}
             </button>
           </div>
 
-          <ImageGenerator onImageGenerated={addAiDraft} makeHeaders={makeHeaders} />
+          <ImageGenerator onImageGenerated={addAiDraft} makeHeaders={makeHeaders} buildApiUrl={apiUrl} />
 
           <hr className="section-divider" />
 
@@ -2102,6 +2526,29 @@ ${extraDifferent}
                           <option value="wallpaper">Wallpaper removal</option>
                           <option value="baseboard">Baseboards & trim</option>
                         </select>
+                      </label>
+                      <label className="field">
+                        <span>CTA / service link</span>
+                        <div className="cta-link-row">
+                          <input
+                            type="text"
+                            value={draft.serviceUrl || ""}
+                            onChange={(e) => updateDraft(draft.id, { serviceUrl: e.target.value })}
+                            placeholder="https://example.com/service"
+                          />
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() =>
+                              updateDraft(draft.id, {
+                                serviceUrl: getRandomServiceUrl(draft.profileKey, draft.serviceType),
+                              })
+                            }
+                          >
+                            Reset
+                          </button>
+                        </div>
+                        <p className="muted small">Used in AI captions and when sending to the scheduler.</p>
                       </label>
 
                       <label className="field">
@@ -2279,19 +2726,29 @@ ${extraDifferent}
                             Select which brand account to use. Calgary uses the default page/IG token, while EPF and Wallpaper use their
                             own tokens.
                           </div>
-                      </details>
-                      <select
-                        value={draft.profileKey}
-                        onChange={(e) => {
-                          const profileKey = e.target.value;
-                          const hashtags = buildHashtags(profileKey, draft.serviceType);
-                          const serviceUrl = getRandomServiceUrl(profileKey, draft.serviceType);
-                          updateDraft(draft.id, { profileKey, hashtags, serviceUrl });
-                        }}
-                      >
-                        {Object.entries(PROFILE_CONFIG).map(([key, cfg]) => (
-                          <option key={key} value={key}>
-                            {cfg.label}
+                        </details>
+                        <select
+                          value={draft.profileKey}
+                          onChange={(e) => {
+                            const profileKey = e.target.value;
+                            const hashtags = buildHashtags(profileKey, draft.serviceType);
+                            const serviceUrl = getRandomServiceUrl(profileKey, draft.serviceType);
+                            const overlayOptions = getOverlayOptionsForProfile(profileKey);
+                            const nextOverlayId = overlayOptions[0]?.id || "";
+                            updateDraft(draft.id, {
+                              profileKey,
+                              hashtags,
+                              serviceUrl,
+                              overlayId:
+                                draft.overlayId && overlayOptions.some((opt) => opt.id === draft.overlayId)
+                                  ? draft.overlayId
+                                  : nextOverlayId,
+                            });
+                          }}
+                        >
+                          {Object.entries(PROFILE_CONFIG).map(([key, cfg]) => (
+                            <option key={key} value={key}>
+                              {cfg.label}
                             </option>
                           ))}
                         </select>
@@ -2347,6 +2804,39 @@ ${extraDifferent}
               >
                 {loading ? "Saving..." : "Save & send to scheduler"}
               </button>
+            </div>
+          )}
+          {files.length > 0 && (
+            <div className="caption-schedule-panel">
+              <h3>AI caption auto-schedule</h3>
+              <p className="muted small">
+                When you run “AI captions for all drafts”, times are auto-filled using the options below. You can still edit any times manually afterwards.
+              </p>
+              <div className="caption-schedule-row">
+                <label className="field">
+                  <span>Frequency</span>
+                  <select
+                    value={captionScheduleFrequency}
+                    onChange={(e) => setCaptionScheduleFrequency(e.target.value)}
+                  >
+                    <option value="1">Every day</option>
+                    <option value="2">Every 2 days</option>
+                    <option value="3">Every 3 days</option>
+                    <option value="5">Every 5 days</option>
+                  </select>
+                </label>
+                <label className="field checkbox-field">
+                  <span>Shuffle times</span>
+                  <div className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={captionShuffleWindows}
+                      onChange={(e) => setCaptionShuffleWindows(e.target.checked)}
+                    />
+                    <span>Randomize posting time each day</span>
+                  </div>
+                </label>
+              </div>
             </div>
           )}
         </section>

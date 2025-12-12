@@ -79,6 +79,90 @@ body {
     font-size: 0.9rem;
 }
 
+.button-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.connection-card code {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.8rem;
+}
+
+.small {
+    font-size: 0.8rem;
+}
+
+.default-upload-panel {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px dashed #cbd5e1;
+    background: rgba(248, 250, 252, 0.9);
+}
+
+.config-panel {
+    margin-top: 16px;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px dashed #cbd5e1;
+    background: rgba(248, 250, 252, 0.9);
+}
+
+.caption-schedule-panel {
+    margin-top: 12px;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px dashed #cbd5e1;
+    background: rgba(248, 250, 252, 0.8);
+}
+
+.caption-schedule-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.checkbox-field {
+    flex: 1;
+}
+
+.checkbox-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    height: 38px;
+}
+
+.default-upload-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-end;
+    margin-top: 6px;
+}
+
+.compact-field {
+    max-width: 220px;
+}
+
+.success-text {
+    color: var(--success);
+    margin-top: 6px;
+}
+
+.cta-link-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.cta-link-row input {
+    flex: 1;
+}
+
 input[type="file"] {
     margin-top: 8px;
     border: 1px solid #dc2626;
