@@ -9,7 +9,7 @@ npm run deploy   import to the servrt
 VITE_API_BASE_URL=https://meta-ai-scheduler-backend.webtoronto22.workers.dev npm run build.  front end step 1redeploy
 npx wrangler pages deploy dist --project-name=meta-ai-scheduler-ui. front end step 2
 
-
+npm run deploy:cloudflare   - use this automated deploy front end 
 
 
 https://developers.facebook.com/tools/explorer/?method=GET&path=me%2Faccounts&version=v24.0.   get page token
@@ -81,8 +81,10 @@ Quick guide: add a new profile/account (end-to-end)
 
 4) Redeploy
    - Backend (if code changed): npx wrangler publish
-   - Frontend: VITE_API_BASE_URL=https://meta-ai-scheduler-backend.webtoronto22.workers.dev npm run build
-               npx wrangler pages deploy dist --project-name=meta-ai-scheduler-ui
+   - Frontend (new helper scripts):
+       cd frontend
+       npm run deploy:cloudflare   # runs build with the Worker URL + Pages deploy
+     (Build-only: npm run build:cloudflare)
 
 5) Sanity checks
    - In the app, Token helper → “Check tokens” for the new profile.

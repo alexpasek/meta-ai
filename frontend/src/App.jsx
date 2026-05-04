@@ -993,6 +993,18 @@ function PostPreview({ draft, profile }) {
   );
 }
 
+function StepCard({ number, title, children }) {
+  return (
+    <div className="step-card">
+      <div className="step-number">{number}</div>
+      <div>
+        <strong>{title}</strong>
+        <p>{children}</p>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [accessKey, setAccessKey] = useState(
     () => (typeof window !== "undefined" && window.localStorage.getItem("accessKey")) || ""
@@ -1105,6 +1117,12 @@ function App() {
   );
   const currentDefaultProfileLabel = getProfileLabel(draftDefaultProfile);
   const currentDefaultServiceLabel = getServiceLabel(draftDefaultService);
+  const draftCount = files.length;
+  const draftReadyCount = files.filter(
+    (draft) => (draft.caption || "").trim() && draft.scheduledLocal && (draft.previewUrl || draft.imageUrl || draft.file)
+  ).length;
+  const scheduledCount = scheduledPosts.filter((post) => post.status === "scheduled").length;
+  const failedCount = scheduledPosts.filter((post) => post.status === "failed").length;
 
   useEffect(() => {
     if (accessKey) {
@@ -2132,13 +2150,36 @@ ${extraDifferent}
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Meta AI Scheduler</h1>
-        <p>Drop photos, let AI write captions, and auto-post via Cloudflare Worker + Meta APIs.</p>
+        <div>
+          <p className="eyebrow">Social posting workspace</p>
+          <h1>Meta AI Scheduler</h1>
+          <p>Upload or generate photos, create captions, schedule posts, and monitor publishing from one page.</p>
+        </div>
+        <div className="header-stats" aria-label="Workspace summary">
+          <span><strong>{draftCount}</strong> drafts</span>
+          <span><strong>{scheduledCount}</strong> scheduled</span>
+          <span className={failedCount ? "stat-danger" : ""}><strong>{failedCount}</strong> failed</span>
+        </div>
       </header>
 
       <main className="app-main">
-        <section className="card connection-card">
-          <h2>Connection</h2>
+        <section className="workflow-strip" aria-label="Posting workflow">
+          <StepCard number="1" title="Choose defaults">
+            Pick the brand and service once. New drafts use these settings automatically.
+          </StepCard>
+          <StepCard number="2" title="Add photos">
+            Upload job photos or generate an image, then run AI captions.
+          </StepCard>
+          <StepCard number="3" title="Schedule and send">
+            Auto-fill posting times, review the preview, then save to the queue.
+          </StepCard>
+        </section>
+
+        <details className="card connection-card compact-details">
+          <summary>
+            <span>Connection settings</span>
+            <small>Current target: {describeApiBase()}</small>
+          </summary>
           <p className="muted">
             API requests go to your Cloudflare Worker. Set the deployed URL when you are not running <code>npm run dev</code> in
             <code>backend/</code>.
@@ -2160,15 +2201,53 @@ ${extraDifferent}
               Use default (proxy)
             </button>
           </div>
-          <p className="muted small">Current target: {describeApiBase()}</p>
-        </section>
+        </details>
 
         <section className="card">
           <h2>1. Create content</h2>
-          <p>Generate AI images or upload your own photos, then let AI write captions and schedule everything.</p>
+          <p>Start with the defaults, add photos, then use the draft actions to caption and schedule.</p>
 
-          <div className="plan-panel">
-            <h3>Quick plan (15–30 posts)</h3>
+          <div className="start-panel">
+            <div className="start-copy">
+              <span className="field-label">Current defaults</span>
+              <strong>{currentDefaultProfileLabel}</strong>
+              <p>{currentDefaultServiceLabel}. Every new uploaded or AI-generated draft starts with these values.</p>
+            </div>
+            <div className="start-controls">
+              <label className="field">
+                <span>Brand / profile</span>
+                <select
+                  value={draftDefaultProfile}
+                  onChange={(e) => setDraftDefaultProfile(e.target.value)}
+                >
+                  {PROFILE_OPTIONS.map((opt) => (
+                    <option key={opt.key} value={opt.key}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>Service</span>
+                <select
+                  value={draftDefaultService}
+                  onChange={(e) => setDraftDefaultService(e.target.value)}
+                >
+                  {SERVICE_TYPES.map((svc) => (
+                    <option key={svc.value} value={svc.value}>
+                      {svc.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <details className="plan-panel compact-details">
+            <summary>
+              <span>Advanced setup: monthly plan, CTA links, and overlay images</span>
+              <small>Open only when you need bulk planning or brand asset changes.</small>
+            </summary>
             <p className="muted">
               Generate empty drafts with schedule + services for one profile. Then drop photos, run AI captions, and save to scheduler.
             </p>
@@ -2383,24 +2462,31 @@ ${extraDifferent}
             >
               Generate plan drafts
             </button>
-          </div>
+          </details>
 
           <ImageGenerator onImageGenerated={addAiDraft} makeHeaders={makeHeaders} buildApiUrl={apiUrl} />
 
           <hr className="section-divider" />
 
-          <h3>Or upload your own photos</h3>
-          <input
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={handleFilesSelected}
-          />
+          <div className="upload-zone">
+            <div>
+              <h3>Upload job photos</h3>
+              <p className="muted">Select one or more photos. They become editable drafts below.</p>
+            </div>
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={handleFilesSelected}
+            />
+          </div>
           <div className="auto-spread">
-            <h3>Auto schedule</h3>
-            <p className="muted">
-              Auto-fill times for all drafts. 1 photo = 1 content day, even if it goes to both Facebook and Instagram.
-            </p>
+            <div>
+              <h3>Auto schedule drafts</h3>
+              <p className="muted">
+                Fill posting times for every draft. Leave the start blank to continue after the latest queued post.
+              </p>
+            </div>
             <div className="auto-spread-row">
               <label className="field">
                 <span>Start date &amp; time</span>
@@ -2430,6 +2516,38 @@ ${extraDifferent}
               Apply auto schedule to drafts
             </button>
           </div>
+          {files.length === 0 && (
+            <div className="empty-state">
+              <strong>No drafts yet</strong>
+              <p>Upload photos or generate an AI image to start. Drafts will appear here with caption, preview, platform, and schedule controls.</p>
+            </div>
+          )}
+          {files.length > 0 && (
+            <div className="draft-toolbar">
+              <div>
+                <strong>{draftCount} draft{draftCount === 1 ? "" : "s"}</strong>
+                <p>{draftReadyCount} ready to save. Each draft needs an image, caption, and schedule time.</p>
+              </div>
+              <div className="draft-toolbar-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={handleAutoCaptionAll}
+                  disabled={bulkCaptionLoading}
+                >
+                  {bulkCaptionLoading ? "Captioning..." : "AI caption all"}
+                </button>
+                <button
+                  className="primary"
+                  type="button"
+                  onClick={handleSaveSchedules}
+                  disabled={loading}
+                >
+                  {loading ? "Saving..." : "Save to scheduler"}
+                </button>
+              </div>
+            </div>
+          )}
           {files.length > 0 && (
             <div className="draft-grid">
               {files.map((draft) => {
@@ -2444,15 +2562,23 @@ ${extraDifferent}
 
                 return (
                   <div key={draft.id} className="draft-card">
-                    <img
-                      src={draft.previewUrl || draft.imageUrl}
-                      alt={draft.file?.name || draft.title || "AI image"}
-                      className="draft-image"
-                    />
+                    {draft.previewUrl || draft.imageUrl ? (
+                      <img
+                        src={draft.previewUrl || draft.imageUrl}
+                        alt={draft.file?.name || draft.title || "AI image"}
+                        className="draft-image"
+                      />
+                    ) : (
+                      <div className="draft-image draft-image-placeholder">
+                        Add photo
+                      </div>
+                    )}
                     <div className="draft-body">
                       <div className="draft-row">
-                        <span className="draft-title">{draft.file?.name || draft.title || "AI image"}</span>
-                        <span className="draft-status">{draft.status}</span>
+                        <div>
+                          <span className="draft-title">{draft.file?.name || draft.title || "Draft post"}</span>
+                          <div className="draft-status">{platformLabel} · {draft.status}</div>
+                        </div>
                         <button
                           type="button"
                           className="link-button"
@@ -2462,71 +2588,106 @@ ${extraDifferent}
                         </button>
                       </div>
 
-                      {/* Mode */}
-                      <label className="field">
-                        <span>Caption length / style</span>
-                        <select
-                          value={draft.mode}
-                          onChange={(e) => updateDraft(draft.id, { mode: e.target.value })}
-                        >
-                          {MODE_OPTIONS.map((opt) => (
-                            <option key={opt.id} value={opt.id}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-
-                      {/* Campaign */}
-                      <label className="field">
-                        <span>Campaign (optional)</span>
-                        <select
-                          value={draft.campaign}
-                          onChange={(e) => updateDraft(draft.id, { campaign: e.target.value })}
-                        >
-                          {CAMPAIGN_OPTIONS.map((opt) => (
-                            <option key={opt.id} value={opt.id}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-
                       <label className="field">
                         <span>Caption</span>
                         <textarea
                           value={draft.caption}
                           onChange={(e) => updateDraft(draft.id, { caption: e.target.value })}
                           rows={4}
+                          placeholder="Click AI caption, or write/edit the caption here."
                         />
                       </label>
 
-                      <label className="field">
-                        <span>Service type</span>
-                        <details className="help-tip">
-                          <summary aria-label="Service help">?</summary>
-                          <div className="help-text">
-                            Tells AI which service this photo is for. It changes the wording, website line and hashtags
-                            (popcorn, drywall, interior painting, wallpaper, baseboards).
-                          </div>
-                        </details>
+                      <div className="draft-simple-grid">
+                        <label className="field">
+                          <span>Profile</span>
+                          <select
+                            value={draft.profileKey}
+                            onChange={(e) => {
+                              const profileKey = e.target.value;
+                              const hashtags = buildHashtags(profileKey, draft.serviceType);
+                              const serviceUrl = getRandomServiceUrl(profileKey, draft.serviceType);
+                              const overlayOptions = getOverlayOptionsForProfile(profileKey);
+                              const nextOverlayId = overlayOptions[0]?.id || "";
+                              updateDraft(draft.id, {
+                                profileKey,
+                                hashtags,
+                                serviceUrl,
+                                overlayId:
+                                  draft.overlayId && overlayOptions.some((opt) => opt.id === draft.overlayId)
+                                    ? draft.overlayId
+                                    : nextOverlayId,
+                              });
+                            }}
+                          >
+                            {Object.entries(PROFILE_CONFIG).map(([key, cfg]) => (
+                              <option key={key} value={key}>
+                                {cfg.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="field">
+                          <span>Service</span>
+                          <select
+                            value={draft.serviceType}
+                            onChange={(e) => {
+                              const serviceType = e.target.value;
+                              const hashtags = buildHashtags(draft.profileKey, serviceType);
+                              const serviceUrl = getRandomServiceUrl(draft.profileKey, serviceType);
+                              updateDraft(draft.id, { serviceType, hashtags, serviceUrl });
+                            }}
+                          >
+                            <option value="popcorn">Popcorn ceiling removal</option>
+                            <option value="drywall">Drywall / taping / repair</option>
+                            <option value="painting">Interior painting</option>
+                            <option value="wallpaper">Wallpaper removal</option>
+                            <option value="baseboard">Baseboards & trim</option>
+                          </select>
+                        </label>
+                      </div>
 
-                        <select
-                          value={draft.serviceType}
-                          onChange={(e) => {
-                            const serviceType = e.target.value;
-                            const hashtags = buildHashtags(draft.profileKey, serviceType);
-                            const serviceUrl = getRandomServiceUrl(draft.profileKey, serviceType);
-                            updateDraft(draft.id, { serviceType, hashtags, serviceUrl });
-                          }}
-                        >
-                          <option value="popcorn">Popcorn ceiling removal</option>
-                          <option value="drywall">Drywall / taping / repair</option>
-                          <option value="painting">Interior painting</option>
-                          <option value="wallpaper">Wallpaper removal</option>
-                          <option value="baseboard">Baseboards & trim</option>
-                        </select>
+                      <label className="field">
+                        <span>Schedule time</span>
+                        <input
+                          type="datetime-local"
+                          value={draft.scheduledLocal}
+                          onChange={(e) => updateDraft(draft.id, { scheduledLocal: e.target.value })}
+                        />
                       </label>
+
+                      <details className="draft-advanced">
+                        <summary>Advanced caption, image, and link options</summary>
+                        <div className="draft-advanced-body">
+                          <div className="draft-simple-grid">
+                            <label className="field">
+                              <span>Caption length / style</span>
+                              <select
+                                value={draft.mode}
+                                onChange={(e) => updateDraft(draft.id, { mode: e.target.value })}
+                              >
+                                {MODE_OPTIONS.map((opt) => (
+                                  <option key={opt.id} value={opt.id}>
+                                    {opt.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+
+                            <label className="field">
+                              <span>Campaign (optional)</span>
+                              <select
+                                value={draft.campaign}
+                                onChange={(e) => updateDraft(draft.id, { campaign: e.target.value })}
+                              >
+                                {CAMPAIGN_OPTIONS.map((opt) => (
+                                  <option key={opt.id} value={opt.id}>
+                                    {opt.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          </div>
                       <label className="field">
                         <span>CTA / service link</span>
                         <div className="cta-link-row">
@@ -2615,10 +2776,10 @@ ${extraDifferent}
                             </option>
                           ))}
                         </select>
-                        {draft.imageLayout === "banner" && (
+                            {draft.imageLayout === "banner" && (
                           <>
                             <p className="muted">
-                              Design this photo as a banner like the HVAC / pigeon examples – bold headline with city + service, plus phone &amp; website on the image.
+                              Design this photo as a banner with a bold headline, service area, and website on the image.
                             </p>
                             <label className="field">
                               <span>Banner style</span>
@@ -2692,6 +2853,8 @@ ${extraDifferent}
                           rows={2}
                         />
                       </label>
+                        </div>
+                      </details>
 
                       <PostPreview
                         draft={draft}
@@ -2718,49 +2881,6 @@ ${extraDifferent}
                           </label>
                         </div>
                       </div>
-                      <label className="field">
-                        <span>Profile</span>
-                        <details className="help-tip">
-                          <summary aria-label="Profile help">?</summary>
-                          <div className="help-text">
-                            Select which brand account to use. Calgary uses the default page/IG token, while EPF and Wallpaper use their
-                            own tokens.
-                          </div>
-                        </details>
-                        <select
-                          value={draft.profileKey}
-                          onChange={(e) => {
-                            const profileKey = e.target.value;
-                            const hashtags = buildHashtags(profileKey, draft.serviceType);
-                            const serviceUrl = getRandomServiceUrl(profileKey, draft.serviceType);
-                            const overlayOptions = getOverlayOptionsForProfile(profileKey);
-                            const nextOverlayId = overlayOptions[0]?.id || "";
-                            updateDraft(draft.id, {
-                              profileKey,
-                              hashtags,
-                              serviceUrl,
-                              overlayId:
-                                draft.overlayId && overlayOptions.some((opt) => opt.id === draft.overlayId)
-                                  ? draft.overlayId
-                                  : nextOverlayId,
-                            });
-                          }}
-                        >
-                          {Object.entries(PROFILE_CONFIG).map(([key, cfg]) => (
-                            <option key={key} value={key}>
-                              {cfg.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="field">
-                        <span>Schedule time</span>
-                        <input
-                          type="datetime-local"
-                          value={draft.scheduledLocal}
-                          onChange={(e) => updateDraft(draft.id, { scheduledLocal: e.target.value })}
-                        />
-                      </label>
                       <div className="draft-actions">
                         <button
                           type="button"
@@ -2783,26 +2903,10 @@ ${extraDifferent}
               <button
                 type="button"
                 className="secondary"
-                onClick={handleAutoCaptionAll}
-                disabled={bulkCaptionLoading}
-              >
-                {bulkCaptionLoading ? "Captioning..." : "AI captions for all drafts"}
-              </button>
-              <button
-                type="button"
-                className="secondary"
                 onClick={handleFullAuto}
                 disabled={fullAutoLoading || loading}
               >
-                {fullAutoLoading ? "Running full auto 🚀" : "Full auto 🚀 (caption + schedule + send)"}
-              </button>
-              <button
-                className="primary"
-                type="button"
-                onClick={handleSaveSchedules}
-                disabled={loading}
-              >
-                {loading ? "Saving..." : "Save & send to scheduler"}
+                {fullAutoLoading ? "Running full auto..." : "Full auto: caption, schedule, and send"}
               </button>
             </div>
           )}
@@ -2964,8 +3068,11 @@ ${extraDifferent}
             )}
           </section>
 
-        <section className="card">
-          <h2>3. Token helper (manual)</h2>
+        <details className="card compact-details">
+          <summary>
+            <span>Token helper and account checks</span>
+            <small>Use this only when publishing fails or tokens need maintenance.</small>
+          </summary>
           <p className="muted">
             When Facebook or Instagram tokens expire, use these tools to generate new tokens
             and then update your Worker secrets via the terminal.
@@ -3113,7 +3220,7 @@ npx wrangler secret put META_IG_ACCESS_TOKEN_WALLPAPER
               Access Token Debugger
             </a>
           </div>
-        </section>
+        </details>
       </main>
     </div>
   );
