@@ -675,7 +675,8 @@ Brand/domain rules:
 
   const systemPrompt =
     "Write natural local-service social captions for home-improvement contractors. " +
-    "Attract homeowners searching for services without keyword stuffing or generic AI language.";
+    "Use specific homeowner situations, local service intent, and plain contractor language. " +
+    "Avoid generic AI marketing phrases, repeated hooks, and keyword stuffing.";
 
   const userPrompt = `
 Write ONE single caption that can be used on ${platformLabel}.
@@ -693,11 +694,11 @@ ${profileRules}
 
 Formatting rules:
 - Output ONLY the caption text (no markdown, no headings).
-- Write 2–3 short sentences.
-- Start with a homeowner problem, local situation, or visible result.
-- Include one natural service + city/area phrase when it fits. Do not repeat keywords.
-- Mention search intent naturally when relevant: popcorn ceilings, drywall repair, smooth ceilings, painting, wallpaper removal, moving, selling, or renovation cleanup.
-- End with a natural DM/call/quote call to action.
+- Write 2–4 short sentences unless the UI asks for shorter.
+- Make it sound like a local contractor wrote it after seeing a real job or a real homeowner request.
+- Include one natural local SEO phrase when it fits, but do not repeat the same service/city wording twice.
+- Use practical details when relevant: floor protection, dust control, skim coat, drywall repair, smooth finish, fresh paint, wallpaper backing, move-in timing, listing prep, or cleanup.
+- Vary the opening and CTA. Do not always start with a problem and do not always end with the same "DM for a quote" wording.
 - Do NOT include website URLs or hashtags unless explicitly requested.
 - Keep the tone ${tone}, friendly and human – like a local contractor talking to homeowners.
 `;
@@ -708,7 +709,7 @@ Formatting rules:
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
     ],
-    max_completion_tokens: Number(env.OPENAI_CAPTION_MAX_TOKENS || 180),
+    max_completion_tokens: Number(env.OPENAI_CAPTION_MAX_TOKENS || 240),
   };
 
   let res;
