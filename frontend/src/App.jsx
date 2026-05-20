@@ -1033,6 +1033,10 @@ function App() {
   const [profileCheckLoading, setProfileCheckLoading] = useState(false);
   const [profileStatus, setProfileStatus] = useState({});
   const [profileCheckingKey, setProfileCheckingKey] = useState(null);
+  const [facebookConnections, setFacebookConnections] = useState([]);
+  const [facebookConnectKey, setFacebookConnectKey] = useState(null);
+  const [facebookTokenCheckLoading, setFacebookTokenCheckLoading] = useState(false);
+  const [facebookNotice, setFacebookNotice] = useState("");
   const [fullAutoLoading, setFullAutoLoading] = useState(false);
   const [planProfileKey, setPlanProfileKey] = useState(() => getStoredDefaultProfile());
   const [planDays, setPlanDays] = useState("30");
@@ -1127,7 +1131,29 @@ function App() {
   useEffect(() => {
     if (accessKey) {
       loadScheduled();
+      loadFacebookConnections();
     }
+  }, [accessKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !accessKey) return;
+    const params = new URLSearchParams(window.location.search);
+    const fbOauth = params.get("fb_oauth");
+    if (!fbOauth) return;
+
+    const profile = params.get("profile") || "";
+    if (fbOauth === "connected") {
+      setFacebookNotice(`Facebook connected for ${getProfileLabel(profile)}.`);
+      loadFacebookConnections();
+    } else {
+      setFacebookNotice(`Facebook reconnect failed: ${params.get("reason") || "unknown error"}`);
+    }
+
+    params.delete("fb_oauth");
+    params.delete("profile");
+    params.delete("reason");
+    const nextUrl = `${window.location.pathname}${params.toString() ? `?${params.toString()}` : ""}${window.location.hash}`;
+    window.history.replaceState({}, "", nextUrl);
   }, [accessKey]);
 
   useEffect(() => {
@@ -2095,6 +2121,73 @@ ${extraDifferent}
       setProfileCheckError(err?.message || "Profile check failed");
     } finally {
       setProfileCheckLoading(false);
+    }
+  }
+
+  async function loadFacebookConnections() {
+    try {
+      const res = await fetch(apiUrl("/api/meta/connections"), {
+        headers: makeHeaders(),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setFacebookConnections(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error("Failed to load Facebook connections", err);
+    }
+  }
+
+  function getFacebookConnection(profileKey) {
+    return facebookConnections.find((connection) => connection.profileKey === profileKey);
+  }
+
+  function formatUnixDate(ts) {
+    if (!ts) return "Unknown";
+    return new Date(ts * 1000).toLocaleString();
+  }
+
+  async function handleConnectFacebook(profileKey) {
+    setFacebookConnectKey(profileKey);
+    setFacebookNotice("");
+    try {
+      const currentUrl = typeof window !== "undefined" ? window.location.href.split("?")[0] : "";
+      const res = await fetch(apiUrl("/api/meta/oauth/start"), {
+        method: "POST",
+        headers: makeHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ profileKey, returnUrl: currentUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.loginUrl) {
+        throw new Error(data?.error || `Facebook OAuth failed (${res.status})`);
+      }
+      window.location.href = data.loginUrl;
+    } catch (err) {
+      console.error("Facebook connect error", err);
+      setFacebookNotice(err?.message || "Failed to start Facebook login.");
+    } finally {
+      setFacebookConnectKey(null);
+    }
+  }
+
+  async function handleCheckFacebookTokens() {
+    setFacebookTokenCheckLoading(true);
+    setFacebookNotice("");
+    try {
+      const res = await fetch(apiUrl("/api/meta/check-tokens"), {
+        method: "POST",
+        headers: makeHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || `Token check failed (${res.status})`);
+      }
+      setFacebookNotice(`Checked ${data.checked || 0} Facebook connection${data.checked === 1 ? "" : "s"}.`);
+      await loadFacebookConnections();
+    } catch (err) {
+      console.error("Facebook token health check error", err);
+      setFacebookNotice(err?.message || "Facebook token health check failed.");
+    } finally {
+      setFacebookTokenCheckLoading(false);
     }
   }
 
@@ -3074,22 +3167,53 @@ ${extraDifferent}
             <small>Use this only when publishing fails or tokens need maintenance.</small>
           </summary>
           <p className="muted">
-            When Facebook or Instagram tokens expire, use these tools to generate new tokens
-            and then update your Worker secrets via the terminal.
+            Facebook Page publishing now uses Meta Login. Connect each profile once, and the Worker stores the tested Page token in D1 before using it for publishing.
           </p>
+          {facebookNotice && <p className="success-text small">{facebookNotice}</p>}
           <div className="profile-status-list">
-            <h3>Account status</h3>
+            <h3>Facebook OAuth connections</h3>
             <p className="muted">
-              Check if each profile has valid Page and Instagram tokens configured.
+              Required permissions: pages_show_list, pages_read_engagement, pages_manage_posts.
             </p>
             {Object.entries(PROFILE_CONFIG).map(([key, cfg]) => {
               const status = profileStatus[key];
+              const connection = getFacebookConnection(key);
+              const reconnectRequired = !!connection?.reconnectRequired;
               return (
                 <div key={key} className="profile-status-row">
                   <div className="profile-status-main">
                     <div className="profile-status-title">
                       <strong>{cfg.label}</strong>
                       <span className="profile-status-key">({key})</span>
+                    </div>
+                    <div className="profile-status-detail">
+                      <div>
+                        <strong>Facebook OAuth:</strong>{" "}
+                        {!connection
+                          ? "Not connected"
+                          : reconnectRequired
+                          ? "Reconnect required"
+                          : `${connection.tokenStatus || "connected"} (${connection.pageName || connection.pageId})`}
+                      </div>
+                      {connection && (
+                        <>
+                          <div>
+                            <strong>User:</strong> {connection.userName || connection.userId || "Unknown"}
+                          </div>
+                          <div>
+                            <strong>Last checked:</strong> {formatUnixDate(connection.lastCheckedAt)}
+                          </div>
+                          <div>
+                            <strong>Granted:</strong> {(connection.grantedPermissions || []).join(", ") || "Unknown"}
+                          </div>
+                          {!!connection.missingPermissions?.length && (
+                            <div className="error-text">
+                              Missing: {connection.missingPermissions.join(", ")}
+                            </div>
+                          )}
+                          {connection.lastError && <div className="error-text">{connection.lastError}</div>}
+                        </>
+                      )}
                     </div>
                     {status && (
                       <div className="profile-status-detail">
@@ -3115,6 +3239,18 @@ ${extraDifferent}
                   <div className="profile-status-actions">
                     <button
                       type="button"
+                      className={reconnectRequired ? "danger" : "primary"}
+                      onClick={() => handleConnectFacebook(key)}
+                      disabled={facebookConnectKey === key}
+                    >
+                      {facebookConnectKey === key
+                        ? "Opening..."
+                        : connection
+                        ? "Reconnect Facebook"
+                        : "Connect Facebook"}
+                    </button>
+                    <button
+                      type="button"
                       className="secondary"
                       onClick={() => handleCheckProfileStatus(key)}
                       disabled={profileCheckingKey === key}
@@ -3125,6 +3261,16 @@ ${extraDifferent}
                 </div>
               );
             })}
+            <div className="button-row">
+              <button
+                type="button"
+                className="secondary"
+                onClick={handleCheckFacebookTokens}
+                disabled={facebookTokenCheckLoading}
+              >
+                {facebookTokenCheckLoading ? "Checking..." : "Run Facebook token health check"}
+              </button>
+            </div>
           </div>
           <div className="token-health">
             <h3>Token status (based on recent posts)</h3>
@@ -3178,28 +3324,22 @@ ${extraDifferent}
           <details className="help-tip">
             <summary aria-label="Token help">?</summary>
             <div className="help-text">
-              Use Graph Explorer to generate tokens, then validate them in Access Token Debugger and update your Worker secrets.
+              For production Page publishing, Meta may require App Review approval for requested Page permissions and Business Verification.
             </div>
           </details>
           <div className="token-instructions">
             <ol>
-              <li>Open Graph Explorer, pick your app, and click Get User Access Token with required scopes.</li>
-              <li>Extend to a long-lived user token (info icon → Access Token Debugger → Extend).</li>
-              <li>In Graph Explorer, call /me/accounts with the long-lived token; copy the Page token for each profile.</li>
-              <li>Validate each Page/IG token in Access Token Debugger (check validity and scopes).</li>
-              <li>In a terminal, from backend/, run:
+              <li>Set Worker secrets:
                 <pre>
-npx wrangler secret put META_PAGE_ACCESS_TOKEN
-npx wrangler secret put META_IG_ACCESS_TOKEN
-npx wrangler secret put META_PAGE_ACCESS_TOKEN_EPF
-npx wrangler secret put META_IG_ACCESS_TOKEN_EPF
-npx wrangler secret put META_PAGE_ACCESS_TOKEN_WALLPAPER
-npx wrangler secret put META_IG_ACCESS_TOKEN_WALLPAPER
+npx wrangler secret put META_APP_ID
+npx wrangler secret put META_APP_SECRET
                 </pre>
               </li>
-              <li>If IDs changed, also set META_PAGE_ID / META_IG_USER_ID and the EPF/WALLPAPER variants, then deploy:
-                <pre>npx wrangler deploy</pre>
+              <li>Set <code>META_OAUTH_REDIRECT_URI</code> to your Worker callback URL:
+                <pre>https://your-worker.workers.dev/api/meta/oauth/callback</pre>
               </li>
+              <li>Add that exact callback URL to your Meta app OAuth redirect settings.</li>
+              <li>For live production use, prepare Meta App Review and Business Verification for Page publishing permissions if Meta requires it.</li>
             </ol>
           </div>
           <div className="token-buttons">
