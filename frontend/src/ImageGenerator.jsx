@@ -103,6 +103,7 @@ export default function ImageGenerator({
   const [count, setCount] = useState("3");
   const [savedImages, setSavedImages] = useState([]);
   const [selectedSavedKey, setSelectedSavedKey] = useState("");
+  const [previewImage, setPreviewImage] = useState(null);
   const [loading, setLoading] = useState(false);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [deletingKey, setDeletingKey] = useState("");
@@ -135,6 +136,12 @@ export default function ImageGenerator({
           return currentKey;
         }
         return nextImages[0]?.key || "";
+      });
+      setPreviewImage((currentPreview) => {
+        if (nextImages.some((image) => image.key === currentPreview?.key)) {
+          return currentPreview;
+        }
+        return nextImages[0] || null;
       });
     } catch (e) {
       console.error("Image library error", e);
@@ -178,6 +185,7 @@ export default function ImageGenerator({
           return true;
         });
         setSelectedSavedKey(filtered[0]?.key || "");
+        setPreviewImage(filtered[0] || null);
         return filtered;
       });
       setPrompt("");
@@ -248,6 +256,12 @@ export default function ImageGenerator({
             return currentKey;
           }
           return filtered[0]?.key || "";
+        });
+        setPreviewImage((currentPreview) => {
+          if (currentPreview?.key !== image.key) {
+            return currentPreview;
+          }
+          return filtered[0] || null;
         });
         return filtered;
       });
@@ -343,34 +357,48 @@ export default function ImageGenerator({
           <p className="muted small">No saved AI images yet.</p>
         ) : (
           <div className="saved-image-browser">
-            <label className="field saved-image-select-field">
-              <span>Choose image</span>
-              <select
-                value={selectedSavedImage?.key || ""}
-                onChange={(e) => setSelectedSavedKey(e.target.value)}
-              >
-                {savedImages.map((image) => (
-                  <option
-                    key={image.key || image.url}
-                    value={image.key || image.url}
-                  >
-                    {(image.prompt || "Generated image").slice(0, 60)}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <details className="saved-image-dropdown" open>
+              <summary>Choose saved image</summary>
+              <div className="saved-image-list">
+                {savedImages.map((image) => {
+                  const isSelected =
+                    (selectedSavedImage?.key || "") === (image.key || "");
+                  return (
+                    <button
+                      key={image.key || image.url}
+                      type="button"
+                      className={`saved-image-option ${isSelected ? "is-selected" : ""}`}
+                      onClick={() => {
+                        setSelectedSavedKey(image.key || "");
+                        setPreviewImage(image);
+                      }}
+                    >
+                      <img
+                        src={image.url}
+                        alt={image.prompt || "Generated image"}
+                        loading="lazy"
+                      />
+                      <div className="saved-image-option-text">
+                        <p title={image.prompt}>
+                          {image.prompt || "Generated image"}
+                        </p>
+                        <span>
+                          {image.quality
+                            ? `${image.quality} quality`
+                            : "saved image"}
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </details>
             {selectedSavedImage ? (
               <div className="saved-image-preview-card">
                 <button
                   type="button"
                   className="saved-image-preview-button"
-                  onClick={() =>
-                    window.open(
-                      selectedSavedImage.url,
-                      "_blank",
-                      "noopener,noreferrer",
-                    )
-                  }
+                  onClick={() => setPreviewImage(selectedSavedImage)}
                   aria-label="Preview saved image"
                 >
                   <img
@@ -419,6 +447,33 @@ export default function ImageGenerator({
           </div>
         )}
       </div>
+      {previewImage ? (
+        <div
+          className="saved-image-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Saved image preview"
+          onClick={() => setPreviewImage(null)}
+        >
+          <div
+            className="saved-image-modal-content"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="saved-image-modal-close"
+              onClick={() => setPreviewImage(null)}
+            >
+              Close
+            </button>
+            <img
+              src={previewImage.url}
+              alt={previewImage.prompt || "Generated image"}
+            />
+            <p>{previewImage.prompt || "Generated image"}</p>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
