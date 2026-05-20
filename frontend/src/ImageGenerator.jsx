@@ -2,6 +2,7 @@
 import React, { useState } from "react";
 
 const ENV_API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+const CUSTOM_PROMPT_VALUE = "custom";
 
 const PROMPT_OPTIONS = [
   {
@@ -107,7 +108,7 @@ export default function ImageGenerator({
   makeHeaders,
   buildApiUrl,
 }) {
-  const [selectedPrompt, setSelectedPrompt] = useState(PROMPT_OPTIONS[0].value);
+  const [selectedPrompt, setSelectedPrompt] = useState(CUSTOM_PROMPT_VALUE);
   const [prompt, setPrompt] = useState(PROMPT_OPTIONS[0].prompt);
   const [count, setCount] = useState("3");
   const [savedImages, setSavedImages] = useState([]);
@@ -185,8 +186,24 @@ export default function ImageGenerator({
 
   function handlePromptChange(value) {
     setSelectedPrompt(value);
+    if (value === CUSTOM_PROMPT_VALUE) {
+      setPrompt("");
+      return;
+    }
+
     const option = PROMPT_OPTIONS.find((item) => item.value === value);
     setPrompt(option?.prompt || "");
+  }
+
+  function handlePromptTextChange(value) {
+    setPrompt(value);
+    const matchedOption = PROMPT_OPTIONS.find((item) => item.prompt === value);
+    setSelectedPrompt(matchedOption?.value || CUSTOM_PROMPT_VALUE);
+  }
+
+  function handleClearPrompt() {
+    setSelectedPrompt(CUSTOM_PROMPT_VALUE);
+    setPrompt("");
   }
 
   async function handleDelete(image) {
@@ -236,13 +253,22 @@ export default function ImageGenerator({
           value={selectedPrompt}
           onChange={(e) => handlePromptChange(e.target.value)}
         >
+          <option value={CUSTOM_PROMPT_VALUE}>Custom prompt</option>
           {PROMPT_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>
               {option.label}
             </option>
           ))}
         </select>
-        <textarea rows={7} value={prompt} readOnly />
+        <textarea
+          rows={7}
+          value={prompt}
+          onChange={(e) => handlePromptTextChange(e.target.value)}
+          placeholder="Choose a preset or type your own prompt..."
+        />
+        <button type="button" className="secondary" onClick={handleClearPrompt}>
+          Clear prompt
+        </button>
       </label>
       <div className="image-generator-actions">
         <label className="field compact-field">
