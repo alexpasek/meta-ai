@@ -1099,38 +1099,6 @@ button.secondary:hover {
   pointer-events: none;
 }
 
-.saved-image-preview-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  max-width: 260px;
-  padding: 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 12px;
-  background: #ffffff;
-}
-
-.saved-image-preview-button {
-  border: 0;
-  padding: 0;
-  background: transparent;
-  cursor: zoom-in;
-}
-
-.saved-image-preview-button img {
-  display: block;
-  width: 100%;
-  aspect-ratio: 1 / 1;
-  object-fit: cover;
-  border-radius: 10px;
-  background: #f1f5f9;
-}
-
-.compact-meta p {
-  -webkit-line-clamp: 3;
-  max-width: 220px;
-}
-
 .library-selection-actions {
   display: flex;
   flex-wrap: wrap;

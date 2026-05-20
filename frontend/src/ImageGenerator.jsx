@@ -169,8 +169,6 @@ export default function ImageGenerator({
   const selectedImages = visibleItems.filter((image) =>
     selectedImageKeys.includes(image.key),
   );
-  const focusedImage = selectedImages[0] || visibleItems[0] || null;
-
   function getHeaders(extra = {}) {
     return typeof makeHeaders === "function" ? makeHeaders(extra) : extra;
   }
@@ -185,17 +183,6 @@ export default function ImageGenerator({
       if (!res.ok) {
         throw new Error(data.error || `Image library failed (${res.status})`);
       }
-      const apiImages = Array.isArray(data.images) ? data.images : [];
-      const storedState = readLibraryStorage();
-      const storedItems = Array.isArray(storedState.items)
-        ? storedState.items
-        : [];
-      const storedMap = new Map(
-        storedItems.map((item) => [
-          item.key || item.url,
-          normalizeLibraryItem(item),
-        ]),
-      );
 
       const mergedItems = [];
 
@@ -366,18 +353,6 @@ export default function ImageGenerator({
     setNewFolderName("");
   }
 
-  function handleMoveImageToFolder(imageKey, folderName) {
-    if (!imageKey || !folderName) return;
-    setFolders((prev) => Array.from(new Set([...prev, folderName])));
-    setLibraryItems((prev) =>
-      prev.map((item) =>
-        (item.key || item.url) === imageKey
-          ? { ...item, folder: folderName }
-          : item,
-      ),
-    );
-  }
-
   function toggleImageSelection(imageKey) {
     if (!imageKey) return;
     setSelectedImageKeys((currentKeys) => {
@@ -397,8 +372,7 @@ export default function ImageGenerator({
   }
 
   function handleUseSelectedAsDraft() {
-    const itemsToUse = selectedImages.length ? selectedImages : focusedImage ? [focusedImage] : [];
-    itemsToUse.forEach((image) => {
+    selectedImages.forEach((image) => {
       onImageGenerated?.(image.url, image.prompt || "", image);
     });
   }
@@ -633,7 +607,14 @@ export default function ImageGenerator({
                     key={image.key || image.url}
                     type="button"
                     className={`saved-thumb ${isSelected ? "is-selected" : ""}`}
-                    onClick={() => toggleImageSelection(image.key)}
+                    onClick={(event) => {
+                      if (event.detail === 1) {
+                        toggleImageSelection(image.key);
+                      }
+                    }}
+                    onDoubleClick={() =>
+                      window.open(image.url, "_blank", "noopener,noreferrer")
+                    }
                     title={image.prompt || "Generated image"}
                   >
                     <span className="saved-thumb-check" aria-hidden="true">
@@ -664,81 +645,12 @@ export default function ImageGenerator({
                   type="button"
                   className="primary"
                   onClick={handleUseSelectedAsDraft}
-                  disabled={!selectedImages.length && !focusedImage}
+                  disabled={!selectedImages.length}
                 >
                   Use selected as draft
                 </button>
               </div>
             </div>
-
-            {focusedImage ? (
-              <div className="saved-image-preview-card">
-                <button
-                  type="button"
-                  className="saved-image-preview-button"
-                  onClick={() =>
-                    window.open(
-                      focusedImage.url,
-                      "_blank",
-                      "noopener,noreferrer",
-                    )
-                  }
-                  aria-label="Open saved image preview"
-                >
-                  <img
-                    src={focusedImage.url}
-                    alt={focusedImage.prompt || "Generated image"}
-                    loading="lazy"
-                  />
-                </button>
-                <div className="image-library-meta compact-meta">
-                  <p title={focusedImage.prompt}>
-                    {focusedImage.prompt || "Generated image"}
-                  </p>
-                  <span>{focusedImage.folder || DEFAULT_LIBRARY_FOLDER}</span>
-                </div>
-                <label className="field compact-field">
-                  <span>Move to folder</span>
-                  <select
-                    value={focusedImage.folder || DEFAULT_LIBRARY_FOLDER}
-                    onChange={(e) =>
-                      handleMoveImageToFolder(focusedImage.key, e.target.value)
-                    }
-                  >
-                    {folders.map((folder) => (
-                      <option key={folder} value={folder}>
-                        {folder}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="image-library-actions">
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() =>
-                      onImageGenerated?.(
-                        focusedImage.url,
-                        focusedImage.prompt || "",
-                        focusedImage,
-                      )
-                    }
-                  >
-                    Use this as draft
-                  </button>
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={() => handleDelete(focusedImage)}
-                    disabled={deletingKey === focusedImage.key}
-                  >
-                    {deletingKey === focusedImage.key
-                      ? "Deleting..."
-                      : "Delete"}
-                  </button>
-                </div>
-              </div>
-            ) : null}
           </div>
         )}
       </div>
