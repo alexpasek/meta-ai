@@ -6,7 +6,18 @@ const CUSTOM_PROMPT_VALUE = "custom";
 
 const TEMPLATE_VALUES = {
   cities: ["Mississauga", "Oakville", "Burlington", "Grimsby", "Hamilton"],
-  neighbourhoods: ["City Centre", "Applewood", "Port Credit", "Bronte", "Glen Abbey", "Aldershot", "Millcroft", "Downtown", "Lakefront", "Meadowlands"],
+  neighbourhoods: [
+    "City Centre",
+    "Applewood",
+    "Port Credit",
+    "Bronte",
+    "Glen Abbey",
+    "Aldershot",
+    "Millcroft",
+    "Downtown",
+    "Lakefront",
+    "Meadowlands",
+  ],
   phones: ["(905) 555-0123", "(416) 555-0456", "(647) 555-0789"],
 };
 
@@ -28,7 +39,7 @@ const PROMPT_OPTIONS = [
     variations: [
       'Realistic professional image for popcorn ceiling removal service in Mississauga City Centre. Bright modern condo living room near Square One style area, old popcorn ceiling being transformed into smooth flat white ceiling, clean floor protection, professional dustless sanding machine, trustworthy contractor look, eye-catching local home renovation advertising image. Add subtle readable text: "Popcorn Ceiling Removal Mississauga".',
       'High-quality before-and-after image showcasing popcorn ceiling removal in Mississauga City Centre. Modern urban condo interior with contractor using dustless sanding equipment, visible texture transformation from outdated to smooth ceiling, professional appearance, clean workspace protection, premium service advertising. Include text overlay: "Transform Your Ceiling Mississauga".',
-      'Professional renovation marketing image for Mississauga City Centre popcorn ceiling removal. Show modern home interior, protected floors, sanding machinery with vacuum system, smooth white ceiling result, bright lighting emphasizing the transformation, trustworthy contractor aesthetic.',
+      "Professional renovation marketing image for Mississauga City Centre popcorn ceiling removal. Show modern home interior, protected floors, sanding machinery with vacuum system, smooth white ceiling result, bright lighting emphasizing the transformation, trustworthy contractor aesthetic.",
     ],
   },
   {
@@ -36,8 +47,8 @@ const PROMPT_OPTIONS = [
     label: "Mississauga - Applewood",
     variations: [
       'High-quality realistic renovation image for popcorn ceiling removal in Applewood Mississauga. Show a clean protected room with contractor using dustless ceiling sander, outdated popcorn texture partly removed, smooth ceiling visible, bright natural light, neat professional workspace, premium local contractor service. Add subtle text area: "Smooth Ceilings in Applewood".',
-      'Eye-catching popcorn removal image for Applewood Mississauga showcasing modern home transformation. Before-and-after visual with half old textured ceiling transitioning to smooth white finish, professional equipment, clean floor protection, bright ambiance, local contractor branding.',
-      'Premium renovation photograph for Applewood ceiling services. Beautiful home interior, contractor with professional dustless sanding system, smooth ceiling transformation clearly visible, protected furniture and floors, fresh modern aesthetic, trustworthy local service presentation.',
+      "Eye-catching popcorn removal image for Applewood Mississauga showcasing modern home transformation. Before-and-after visual with half old textured ceiling transitioning to smooth white finish, professional equipment, clean floor protection, bright ambiance, local contractor branding.",
+      "Premium renovation photograph for Applewood ceiling services. Beautiful home interior, contractor with professional dustless sanding system, smooth ceiling transformation clearly visible, protected furniture and floors, fresh modern aesthetic, trustworthy local service presentation.",
     ],
   },
   {
@@ -45,8 +56,8 @@ const PROMPT_OPTIONS = [
     label: "Mississauga - Port Credit",
     variations: [
       'Eye-catching home improvement image for popcorn ceiling removal in Port Credit Mississauga. Modern home interior with lake-area bright natural light, before-and-after ceiling transformation, left side old popcorn ceiling, right side smooth white ceiling, clean professional finish, premium contractor advertising style. Add text: "Popcorn Ceiling Removal Port Credit".',
-      'Upscale home renovation image for Port Credit ceiling services. Show lakeside home interior with modern design, contractor using professional dustless equipment, visible texture removal process, smooth ceiling result, bright natural light from windows, premium local service aesthetic.',
-      'Professional marketing image showcasing Port Credit home transformation. Split-screen before-and-after effect with textured ceiling converting to smooth modern finish, luxury home style, clean workspace, professional contractor appearance.',
+      "Upscale home renovation image for Port Credit ceiling services. Show lakeside home interior with modern design, contractor using professional dustless equipment, visible texture removal process, smooth ceiling result, bright natural light from windows, premium local service aesthetic.",
+      "Professional marketing image showcasing Port Credit home transformation. Split-screen before-and-after effect with textured ceiling converting to smooth modern finish, luxury home style, clean workspace, professional contractor appearance.",
     ],
   },
   {
@@ -54,8 +65,8 @@ const PROMPT_OPTIONS = [
     label: "Random Auto Template",
     variations: [
       'Create a realistic professional popcorn ceiling removal service image for [CITY] in [NEIGHBOURHOOD]. Show a clean protected room, outdated popcorn ceiling being removed, smooth white ceiling transformation, professional dustless sanding machine, bright natural light, premium contractor service look, no messy dust, eye-catching local advertising image. Add subtle readable text: "Popcorn Ceiling Removal [CITY]".',
-      'High-quality home renovation image for popcorn ceiling removal in [NEIGHBOURHOOD], [CITY]. Display contractor using modern dustless sanding equipment, before-and-after ceiling texture transformation, protected floors and furniture, bright professional workspace, premium local service presentation.',
-      'Professional marketing photograph for [CITY] ceiling refinishing services in [NEIGHBOURHOOD]. Show modern home interior transformation from textured to smooth ceiling, clean equipment setup, bright natural lighting, trustworthy contractor aesthetic.',
+      "High-quality home renovation image for popcorn ceiling removal in [NEIGHBOURHOOD], [CITY]. Display contractor using modern dustless sanding equipment, before-and-after ceiling texture transformation, protected floors and furniture, bright professional workspace, premium local service presentation.",
+      "Professional marketing photograph for [CITY] ceiling refinishing services in [NEIGHBOURHOOD]. Show modern home interior transformation from textured to smooth ceiling, clean equipment setup, bright natural lighting, trustworthy contractor aesthetic.",
     ],
   },
   {
@@ -71,7 +82,7 @@ const PROMPT_OPTIONS = [
     label: "Clean Minimal Design",
     variations: [
       'Create a clean realistic marketing image for popcorn ceiling removal service in [CITY], [NEIGHBOURHOOD]. Show smooth ceiling transformation, protected floors, professional tools, bright home interior, fresh modern finish, premium local contractor feel, no phone number, no logo, no clutter. Add subtle text only: "Smooth Ceilings in [CITY]".',
-      'Minimalist professional renovation photograph for [NEIGHBOURHOOD], [CITY]. Modern home with smooth ceiling finish, bright workspace, professional dustless equipment, clean aesthetic, premium contractor service appearance. Subtle branding only.',
+      "Minimalist professional renovation photograph for [NEIGHBOURHOOD], [CITY]. Modern home with smooth ceiling finish, bright workspace, professional dustless equipment, clean aesthetic, premium contractor service appearance. Subtle branding only.",
     ],
   },
 ];
@@ -91,11 +102,17 @@ export default function ImageGenerator({
   const [prompt, setPrompt] = useState("");
   const [count, setCount] = useState("3");
   const [savedImages, setSavedImages] = useState([]);
+  const [selectedSavedKey, setSelectedSavedKey] = useState("");
   const [loading, setLoading] = useState(false);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [deletingKey, setDeletingKey] = useState("");
   const [error, setError] = useState("");
   const apiUrl = buildApiUrl || defaultApiUrl;
+
+  const selectedSavedImage =
+    savedImages.find((image) => image.key === selectedSavedKey) ||
+    savedImages[0] ||
+    null;
 
   function getHeaders(extra = {}) {
     return typeof makeHeaders === "function" ? makeHeaders(extra) : extra;
@@ -111,7 +128,14 @@ export default function ImageGenerator({
       if (!res.ok) {
         throw new Error(data.error || `Image library failed (${res.status})`);
       }
-      setSavedImages(Array.isArray(data.images) ? data.images : []);
+      const nextImages = Array.isArray(data.images) ? data.images : [];
+      setSavedImages(nextImages);
+      setSelectedSavedKey((currentKey) => {
+        if (nextImages.some((image) => image.key === currentKey)) {
+          return currentKey;
+        }
+        return nextImages[0]?.key || "";
+      });
     } catch (e) {
       console.error("Image library error", e);
       setError(e.message || "Image library failed");
@@ -148,11 +172,13 @@ export default function ImageGenerator({
       setSavedImages((prev) => {
         const next = [...images, ...prev];
         const seen = new Set();
-        return next.filter((image) => {
+        const filtered = next.filter((image) => {
           if (!image?.key || seen.has(image.key)) return false;
           seen.add(image.key);
           return true;
         });
+        setSelectedSavedKey(filtered[0]?.key || "");
+        return filtered;
       });
       setPrompt("");
     } catch (e) {
@@ -215,7 +241,16 @@ export default function ImageGenerator({
       if (!res.ok) {
         throw new Error(data.error || `Delete failed (${res.status})`);
       }
-      setSavedImages((prev) => prev.filter((item) => item.key !== image.key));
+      setSavedImages((prev) => {
+        const filtered = prev.filter((item) => item.key !== image.key);
+        setSelectedSavedKey((currentKey) => {
+          if (currentKey !== image.key) {
+            return currentKey;
+          }
+          return filtered[0]?.key || "";
+        });
+        return filtered;
+      });
     } catch (e) {
       console.error("Delete image error", e);
       setError(e.message || "Delete failed");
@@ -262,7 +297,11 @@ export default function ImageGenerator({
           >
             Generate variation
           </button>
-          <button type="button" className="secondary" onClick={handleClearPrompt}>
+          <button
+            type="button"
+            className="secondary"
+            onClick={handleClearPrompt}
+          >
             Clear
           </button>
         </div>
@@ -303,20 +342,51 @@ export default function ImageGenerator({
         {savedImages.length === 0 ? (
           <p className="muted small">No saved AI images yet.</p>
         ) : (
-          <div className="image-library-grid">
-            {savedImages.map((image) => (
-              <div key={image.key || image.url} className="image-library-item">
-                <img
-                  src={image.url}
-                  alt={image.prompt || "Generated image"}
-                  loading="lazy"
-                />
-                <div className="image-library-meta">
-                  <p title={image.prompt}>
-                    {image.prompt || "Generated image"}
+          <div className="saved-image-browser">
+            <label className="field saved-image-select-field">
+              <span>Choose image</span>
+              <select
+                value={selectedSavedImage?.key || ""}
+                onChange={(e) => setSelectedSavedKey(e.target.value)}
+              >
+                {savedImages.map((image) => (
+                  <option
+                    key={image.key || image.url}
+                    value={image.key || image.url}
+                  >
+                    {(image.prompt || "Generated image").slice(0, 60)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {selectedSavedImage ? (
+              <div className="saved-image-preview-card">
+                <button
+                  type="button"
+                  className="saved-image-preview-button"
+                  onClick={() =>
+                    window.open(
+                      selectedSavedImage.url,
+                      "_blank",
+                      "noopener,noreferrer",
+                    )
+                  }
+                  aria-label="Preview saved image"
+                >
+                  <img
+                    src={selectedSavedImage.url}
+                    alt={selectedSavedImage.prompt || "Generated image"}
+                    loading="lazy"
+                  />
+                </button>
+                <div className="image-library-meta compact-meta">
+                  <p title={selectedSavedImage.prompt}>
+                    {selectedSavedImage.prompt || "Generated image"}
                   </p>
                   <span>
-                    {image.quality ? `${image.quality} quality` : "saved image"}
+                    {selectedSavedImage.quality
+                      ? `${selectedSavedImage.quality} quality`
+                      : "saved image"}
                   </span>
                 </div>
                 <div className="image-library-actions">
@@ -324,7 +394,11 @@ export default function ImageGenerator({
                     type="button"
                     className="secondary"
                     onClick={() =>
-                      onImageGenerated?.(image.url, image.prompt || "", image)
+                      onImageGenerated?.(
+                        selectedSavedImage.url,
+                        selectedSavedImage.prompt || "",
+                        selectedSavedImage,
+                      )
                     }
                   >
                     Use as draft
@@ -332,14 +406,16 @@ export default function ImageGenerator({
                   <button
                     type="button"
                     className="danger"
-                    onClick={() => handleDelete(image)}
-                    disabled={deletingKey === image.key}
+                    onClick={() => handleDelete(selectedSavedImage)}
+                    disabled={deletingKey === selectedSavedImage.key}
                   >
-                    {deletingKey === image.key ? "Deleting..." : "Delete"}
+                    {deletingKey === selectedSavedImage.key
+                      ? "Deleting..."
+                      : "Delete"}
                   </button>
                 </div>
               </div>
-            ))}
+            ) : null}
           </div>
         )}
       </div>
