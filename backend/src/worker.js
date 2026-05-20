@@ -177,6 +177,14 @@ export default {
                 return handleUpload(request, env);
             }
 
+            if (pathname === "/api/images" && method === "GET") {
+                return listGeneratedImages(request, env);
+            }
+
+            if (pathname === "/api/images" && method === "DELETE") {
+                return deleteGeneratedImage(request, env);
+            }
+
             if (pathname === "/api/posts" && method === "GET") {
                 await ensureSchema(env);
                 return listPosts(env, url);
@@ -602,7 +610,7 @@ async function generateCaption(request, env) {
 
   const body = await request.json();
   const {
-    prompt = "",
+    prompt: rawPrompt = "",
     tone = "friendly",
     platform = "both",
     profile = "calgary",
@@ -614,8 +622,9 @@ async function generateCaption(request, env) {
     neighbourhood,
   } = body || {};
 
+  const prompt = String(rawPrompt || "").trim().slice(0, 1800);
   const apiBase = cleanBaseUrl(env.OPENAI_API_BASE, "https://api.openai.com");
-  const model = env.OPENAI_MODEL || "gpt-4o-mini";
+  const model = env.OPENAI_MODEL || "gpt-5.5";
 
   let profileRules = "";
   if (profile === "calgary") {
@@ -665,10 +674,8 @@ Brand/domain rules:
   const ctaDescription = ctaMode ? describeCtaMode(ctaMode) : null;
 
   const systemPrompt =
-    "You are a social media copywriter for a local home-improvement contractor " +
-    "(popcorn ceiling removal, drywall, painting, wallpaper removal). " +
-    "You write natural, human captions that sound like a real small contractor—" +
-    "not a big marketing agency and not a robot. Every caption must feel unique.";
+    "Write natural local-service social captions for home-improvement contractors. " +
+    "Attract homeowners searching for services without keyword stuffing or generic AI language.";
 
   const userPrompt = `
 Write ONE single caption that can be used on ${platformLabel}.
@@ -686,13 +693,12 @@ ${profileRules}
 
 Formatting rules:
 - Output ONLY the caption text (no markdown, no headings).
-- Do NOT create separate Facebook and Instagram captions.
-- Do NOT write labels like "Facebook Caption:" or "Instagram Caption:".
-- Do NOT include any separators like "---" between sections.
-- Write 2–4 short sentences or short bullet-style lines.
-- Include a clear, natural call to action (DM, call, or ask for a quote) **in words**, not by dropping a raw link.
-- Do NOT include any website URL or domain name UNLESS the prompt explicitly asks you to include a specific URL.
-- Do NOT add any hashtags UNLESS the prompt explicitly asks for hashtags.
+- Write 2–3 short sentences.
+- Start with a homeowner problem, local situation, or visible result.
+- Include one natural service + city/area phrase when it fits. Do not repeat keywords.
+- Mention search intent naturally when relevant: popcorn ceilings, drywall repair, smooth ceilings, painting, wallpaper removal, moving, selling, or renovation cleanup.
+- End with a natural DM/call/quote call to action.
+- Do NOT include website URLs or hashtags unless explicitly requested.
 - Keep the tone ${tone}, friendly and human – like a local contractor talking to homeowners.
 `;
 
@@ -702,7 +708,7 @@ Formatting rules:
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
     ],
-    temperature: 0.9,
+    max_completion_tokens: Number(env.OPENAI_CAPTION_MAX_TOKENS || 180),
   };
 
   let res;
@@ -768,7 +774,9 @@ async function generateImage(request, env) {
   }
 
   const body = await request.json();
-  const prompt = (body?.prompt || "").trim();
+  const prompt = (body?.prompt || "").trim().slice(0, 1200);
+  const requestedCount = Number(body?.count || 1);
+  const count = Math.min(6, Math.max(1, Number.isFinite(requestedCount) ? Math.floor(requestedCount) : 1));
 
   if (!prompt) {
     return new Response(JSON.stringify({ error: "prompt is required" }), {
@@ -778,131 +786,231 @@ async function generateImage(request, env) {
   }
 
   const apiBase = cleanBaseUrl(env.OPENAI_API_BASE, "https://api.openai.com");
-  const model = env.OPENAI_IMAGE_MODEL || "gpt-image-1";
+  const model = env.OPENAI_IMAGE_MODEL || "gpt-image-2";
+  const size = env.OPENAI_IMAGE_SIZE || "1024x1024";
+  const quality = env.OPENAI_IMAGE_QUALITY || "low";
 
-  const payload = {
-    model,
-    prompt,
-    n: 1,
-    size: "1024x1024",
-  };
+  const generated = [];
 
-  let res;
-  try {
-    res = await fetch(`${apiBase}/v1/images/generations`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-  } catch (err) {
-    console.error("OpenAI image network error", err);
-    return new Response(
-      JSON.stringify({
-        error: `OpenAI image network error: ${err.message || err}`,
-      }),
-      { status: 500, headers: JSON_HEADERS }
-    );
-  }
+  for (let index = 0; index < count; index++) {
+    const payload = {
+      model,
+      prompt,
+      n: 1,
+      size,
+      quality,
+    };
 
-  const rawText = await res.text();
-  if (!res.ok) {
-    console.error("OpenAI image error", res.status, rawText);
-    return new Response(
-      JSON.stringify({
-        error: `OpenAI image API error ${res.status}`,
-        detail: rawText,
-      }),
-      { status: 500, headers: JSON_HEADERS }
-    );
-  }
-
-  let data;
-  try {
-    data = JSON.parse(rawText);
-  } catch (e) {
-    console.error("Failed to parse OpenAI image JSON", e, rawText);
-    return new Response(
-      JSON.stringify({
-        error: "Failed to parse OpenAI image response",
-      }),
-      { status: 500, headers: JSON_HEADERS }
-    );
-  }
-
-  const img = data?.data?.[0];
-  if (!img) {
-    console.error("OpenAI image response missing data", data);
-    return new Response(
-      JSON.stringify({
-        error: "OpenAI image response missing data[0]",
-        detail: data,
-      }),
-      { status: 500, headers: JSON_HEADERS }
-    );
-  }
-
-  let bytes;
-  let contentType = "image/png";
-
-  if (img.b64_json) {
-    const binaryStr = atob(img.b64_json);
-    const len = binaryStr.length;
-    const arr = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      arr[i] = binaryStr.charCodeAt(i);
-    }
-    bytes = arr;
-  } else if (img.url) {
-    const imgRes = await fetch(img.url);
-    if (!imgRes.ok) {
-      const t = await imgRes.text();
-      console.error("Error fetching image URL from OpenAI:", img.url, t);
+    let res;
+    try {
+      res = await fetch(`${apiBase}/v1/images/generations`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      console.error("OpenAI image network error", err);
       return new Response(
         JSON.stringify({
-          error: "Failed to download image from OpenAI URL",
-          detail: t,
+          error: `OpenAI image network error: ${err.message || err}`,
+          generated,
         }),
         { status: 500, headers: JSON_HEADERS }
       );
     }
-    const buf = await imgRes.arrayBuffer();
-    bytes = new Uint8Array(buf);
-    const ct = imgRes.headers.get("content-type");
-    if (ct) contentType = ct;
-  } else {
-    console.error("OpenAI image: no b64_json or url found", img);
+
+    const rawText = await res.text();
+    if (!res.ok) {
+      console.error("OpenAI image error", res.status, rawText);
+      return new Response(
+        JSON.stringify({
+          error: `OpenAI image API error ${res.status}`,
+          detail: rawText,
+          generated,
+        }),
+        { status: 500, headers: JSON_HEADERS }
+      );
+    }
+
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch (e) {
+      console.error("Failed to parse OpenAI image JSON", e, rawText);
+      return new Response(
+        JSON.stringify({
+          error: "Failed to parse OpenAI image response",
+          generated,
+        }),
+        { status: 500, headers: JSON_HEADERS }
+      );
+    }
+
+    const img = data?.data?.[0];
+    if (!img) {
+      console.error("OpenAI image response missing data", data);
+      return new Response(
+        JSON.stringify({
+          error: "OpenAI image response missing data[0]",
+          detail: data,
+          generated,
+        }),
+        { status: 500, headers: JSON_HEADERS }
+      );
+    }
+
+    let bytes;
+    let contentType = "image/png";
+
+    if (img.b64_json) {
+      const binaryStr = atob(img.b64_json);
+      const len = binaryStr.length;
+      const arr = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        arr[i] = binaryStr.charCodeAt(i);
+      }
+      bytes = arr;
+    } else if (img.url) {
+      const imgRes = await fetch(img.url);
+      if (!imgRes.ok) {
+        const t = await imgRes.text();
+        console.error("Error fetching image URL from OpenAI:", img.url, t);
+        return new Response(
+          JSON.stringify({
+            error: "Failed to download image from OpenAI URL",
+            detail: t,
+            generated,
+          }),
+          { status: 500, headers: JSON_HEADERS }
+        );
+      }
+      const buf = await imgRes.arrayBuffer();
+      bytes = new Uint8Array(buf);
+      const ct = imgRes.headers.get("content-type");
+      if (ct) contentType = ct;
+    } else {
+      console.error("OpenAI image: no b64_json or url found", img);
+      return new Response(
+        JSON.stringify({
+          error: "No b64_json or url in OpenAI image response",
+          detail: img,
+          generated,
+        }),
+        { status: 500, headers: JSON_HEADERS }
+      );
+    }
+
+    const safePrompt = prompt
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .slice(0, 40)
+      .replace(/^-|-$/g, "");
+    const createdAt = new Date().toISOString();
+    const key = `generated/${crypto.randomUUID()}-${safePrompt || "ai-image"}.png`;
+
+    await env.MEDIA_BUCKET.put(key, bytes, {
+      httpMetadata: {
+        contentType,
+      },
+      customMetadata: {
+        prompt: prompt.slice(0, 500),
+        createdAt,
+        model,
+        size,
+        quality,
+      },
+    });
+
+    const base = new URL(request.url).origin;
+    generated.push({
+      url: `${base}/media/${encodeURIComponent(key)}`,
+      key,
+      prompt,
+      createdAt,
+      model,
+      size,
+      quality,
+      index,
+    });
+  }
+
+  return new Response(
+    JSON.stringify({
+      url: generated[0]?.url,
+      key: generated[0]?.key,
+      prompt,
+      images: generated,
+    }),
+    { status: 200, headers: JSON_HEADERS }
+  );
+}
+
+async function listGeneratedImages(request, env) {
+  if (!env.MEDIA_BUCKET) {
+    return new Response(JSON.stringify({ error: "MEDIA_BUCKET not configured" }), {
+      status: 500,
+      headers: JSON_HEADERS,
+    });
+  }
+
+  const url = new URL(request.url);
+  const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit") || 60)));
+  const listed = await env.MEDIA_BUCKET.list({
+    prefix: "generated/",
+    limit,
+    include: ["customMetadata"],
+  });
+
+  const base = url.origin;
+  const images = (listed.objects || [])
+    .map((object) => ({
+      key: object.key,
+      url: `${base}/media/${encodeURIComponent(object.key)}`,
+      size: object.size,
+      uploaded: object.uploaded ? new Date(object.uploaded).toISOString() : null,
+      prompt: object.customMetadata?.prompt || "",
+      createdAt: object.customMetadata?.createdAt || (object.uploaded ? new Date(object.uploaded).toISOString() : null),
+      model: object.customMetadata?.model || "",
+      imageSize: object.customMetadata?.size || "",
+      quality: object.customMetadata?.quality || "",
+    }))
+    .sort((a, b) => String(b.createdAt || b.uploaded || "").localeCompare(String(a.createdAt || a.uploaded || "")));
+
+  return new Response(JSON.stringify({ images }), { headers: JSON_HEADERS });
+}
+
+async function deleteGeneratedImage(request, env) {
+  if (!env.MEDIA_BUCKET) {
+    return new Response(JSON.stringify({ error: "MEDIA_BUCKET not configured" }), {
+      status: 500,
+      headers: JSON_HEADERS,
+    });
+  }
+
+  const url = new URL(request.url);
+  let key = url.searchParams.get("key") || "";
+  if (!key) {
+    try {
+      const body = await request.json();
+      key = body?.key || "";
+    } catch {
+      // ignore
+    }
+  }
+
+  key = String(key || "");
+  if (!key.startsWith("generated/")) {
     return new Response(
-      JSON.stringify({
-        error: "No b64_json or url in OpenAI image response",
-        detail: img,
-      }),
-      { status: 500, headers: JSON_HEADERS }
+      JSON.stringify({ error: "Only generated images can be deleted from this endpoint" }),
+      { status: 400, headers: JSON_HEADERS }
     );
   }
 
-  const safePrompt = prompt
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .slice(0, 40)
-    .replace(/^-|-$/g, "");
-  const key = `${crypto.randomUUID()}-${safePrompt || "ai-image"}.png`;
-
-  await env.MEDIA_BUCKET.put(key, bytes, {
-    httpMetadata: {
-      contentType,
-    },
-  });
-
-  const base = new URL(request.url).origin;
-  const urlOut = `${base}/media/${encodeURIComponent(key)}`;
-
-  return new Response(
-    JSON.stringify({ url: urlOut, key, prompt }),
-    { status: 200, headers: JSON_HEADERS }
-  );
+  await env.MEDIA_BUCKET.delete(key);
+  return new Response(JSON.stringify({ ok: true, key }), { headers: JSON_HEADERS });
 }
 
 /**
@@ -1360,6 +1468,7 @@ async function startFacebookOAuth(request, env) {
     redirect_uri: redirectUri,
     state,
     response_type: "code",
+    auth_type: "rerequest",
     scope: REQUIRED_FACEBOOK_PAGE_PERMISSIONS.join(","),
   });
 
@@ -1503,7 +1612,7 @@ async function saveFacebookConnectionFromUserToken(env, { profileKey, requestedP
   }
 
   const accounts = await graphJson(graphUrl(env, "/me/accounts"), {
-    fields: "id,name,access_token,tasks,perms",
+    fields: "id,name,access_token,tasks",
     access_token: userAccessToken,
   });
   const pages = accounts.data || [];

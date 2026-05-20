@@ -1099,6 +1099,49 @@ button.secondary:hover {
   pointer-events: none;
 }
 
+.image-review-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(15, 23, 42, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.image-review-modal {
+  width: min(920px, 100%);
+  max-height: 92vh;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid #334155;
+  background: #ffffff;
+  padding: 12px;
+  box-shadow: 0 18px 60px rgba(15, 23, 42, 0.35);
+}
+
+.image-review-close {
+  display: block;
+  margin-left: auto;
+  margin-bottom: 10px;
+}
+
+.image-review-modal img {
+  display: block;
+  width: 100%;
+  max-height: 72vh;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #0f172a;
+}
+
+.image-review-caption {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
 .library-selection-actions {
   display: flex;
   flex-wrap: wrap;

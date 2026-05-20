@@ -146,17 +146,18 @@ export default function ImageGenerator({
   makeHeaders,
   buildApiUrl,
 }) {
+  const initialLibraryState = React.useMemo(() => readLibraryStorage(), []);
   const [selectedPrompt, setSelectedPrompt] = useState(CUSTOM_PROMPT_VALUE);
   const [prompt, setPrompt] = useState("");
   const [count, setCount] = useState("3");
-  const [folders, setFolders] = useState([DEFAULT_LIBRARY_FOLDER]);
+  const [folders, setFolders] = useState(initialLibraryState.folders);
   const [selectedFolder, setSelectedFolder] = useState("All");
   const [newFolderName, setNewFolderName] = useState("");
-  const [libraryItems, setLibraryItems] = useState([]);
+  const [libraryItems, setLibraryItems] = useState(initialLibraryState.items);
   const [selectedImageKeys, setSelectedImageKeys] = useState([]);
+  const [reviewImage, setReviewImage] = useState(null);
   const [loading, setLoading] = useState(false);
   const [libraryLoading, setLibraryLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [deletingKey, setDeletingKey] = useState("");
   const [error, setError] = useState("");
   const apiUrl = buildApiUrl || defaultApiUrl;
@@ -184,6 +185,14 @@ export default function ImageGenerator({
         throw new Error(data.error || `Image library failed (${res.status})`);
       }
 
+      const apiImages = Array.isArray(data.images) ? data.images : [];
+      const storedState = readLibraryStorage();
+      const storedMap = new Map(
+        storedState.items
+          .map((item) => normalizeLibraryItem(item))
+          .filter(Boolean)
+          .map((item) => [item.key || item.url, item]),
+      );
       const mergedItems = [];
 
       for (const image of apiImages) {
@@ -293,7 +302,11 @@ export default function ImageGenerator({
           const nextKeys = Array.from(
             new Set([...currentKeys, ...nextItems.map((item) => item.key)]),
           );
-          return nextKeys.length ? nextKeys : merged[0]?.key ? [merged[0].key] : [];
+          return nextKeys.length
+            ? nextKeys
+            : merged[0]?.key
+              ? [merged[0].key]
+              : [];
         });
         setFolders((prev) =>
           Array.from(new Set([...prev, selectedFolderForNewImages])),
@@ -375,61 +388,6 @@ export default function ImageGenerator({
     selectedImages.forEach((image) => {
       onImageGenerated?.(image.url, image.prompt || "", image);
     });
-  }
-
-  async function handleUploadFiles(event) {
-    const files = Array.from(event.target.files || []);
-    event.target.value = "";
-    if (!files.length) return;
-
-    const targetFolder =
-      selectedFolder === "All" ? DEFAULT_LIBRARY_FOLDER : selectedFolder;
-
-    setUploading(true);
-    setError("");
-    try {
-      const uploadedItems = [];
-      for (const file of files) {
-        const formData = new FormData();
-        formData.append("file", file);
-        const res = await fetch(apiUrl("/api/upload"), {
-          method: "POST",
-          headers: getHeaders(),
-          body: formData,
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || `Upload failed (${res.status})`);
-        }
-        uploadedItems.push(
-          normalizeLibraryItem(
-            {
-              key: data.key,
-              url: data.url,
-              prompt: file.name,
-              quality: "",
-              source: "uploaded",
-              folder: targetFolder,
-              createdAt: new Date().toISOString(),
-            },
-            targetFolder,
-          ),
-        );
-      }
-
-      setFolders((prev) => Array.from(new Set([...prev, targetFolder])));
-      setLibraryItems((prev) => [...uploadedItems, ...prev]);
-      setSelectedImageKeys((currentKeys) =>
-        Array.from(
-          new Set([...uploadedItems.map((item) => item.key), ...currentKeys]),
-        ),
-      );
-    } catch (e) {
-      console.error("Upload image error", e);
-      setError(e.message || "Upload failed");
-    } finally {
-      setUploading(false);
-    }
   }
 
   async function handleDelete(image) {
@@ -550,10 +508,7 @@ export default function ImageGenerator({
 
         <div className="library-toolbar">
           <div className="folder-chip-row" aria-label="Image folders">
-            {[
-              "All",
-              ...folders.filter((folder) => folder !== DEFAULT_LIBRARY_FOLDER),
-            ].map((folder) => (
+            {["All", ...folders].map((folder) => (
               <button
                 key={folder}
                 type="button"
@@ -582,16 +537,6 @@ export default function ImageGenerator({
             >
               Add folder
             </button>
-            <label className="upload-button-field">
-              <span>Upload image</span>
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                onChange={handleUploadFiles}
-                disabled={uploading}
-              />
-            </label>
           </div>
         </div>
 
@@ -613,7 +558,7 @@ export default function ImageGenerator({
                       }
                     }}
                     onDoubleClick={() =>
-                      window.open(image.url, "_blank", "noopener,noreferrer")
+                      setReviewImage(image)
                     }
                     title={image.prompt || "Generated image"}
                   >
@@ -632,13 +577,23 @@ export default function ImageGenerator({
 
             <div className="library-selection-actions">
               <span>
-                {selectedImages.length ? `${selectedImages.length} selected` : "Click thumbnails to select"}
+                {selectedImages.length
+                  ? `${selectedImages.length} selected`
+                  : "Click thumbnails to select"}
               </span>
               <div className="button-row">
-                <button type="button" className="secondary" onClick={handleSelectAllVisible}>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={handleSelectAllVisible}
+                >
                   Select all in folder
                 </button>
-                <button type="button" className="secondary" onClick={handleClearSelection}>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={handleClearSelection}
+                >
                   Clear selection
                 </button>
                 <button
@@ -654,6 +609,36 @@ export default function ImageGenerator({
           </div>
         )}
       </div>
+      {reviewImage && (
+        <div
+          className="image-review-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Review saved image"
+          onClick={() => setReviewImage(null)}
+        >
+          <div
+            className="image-review-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="image-review-close"
+              onClick={() => setReviewImage(null)}
+              aria-label="Close image review"
+            >
+              Close
+            </button>
+            <img
+              src={reviewImage.url}
+              alt={reviewImage.prompt || "Saved image preview"}
+            />
+            {reviewImage.prompt && (
+              <p className="image-review-caption">{reviewImage.prompt}</p>
+            )}
+          </div>
+        </div>
+      )}
     </section>
   );
 }

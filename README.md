@@ -46,11 +46,19 @@ npm run d1:migrate
 You need:
 
 - `OPENAI_API_KEY` – your OpenAI API key.
+- `OPENAI_MODEL` – optional caption/text model override. Defaults to `gpt-5.5`.
+- `OPENAI_IMAGE_MODEL` – optional image generation model override. Defaults to `gpt-image-2`.
+- `OPENAI_CAPTION_MAX_TOKENS` – optional caption output cap. Defaults to `180`.
+- `OPENAI_IMAGE_SIZE` – optional image size. Defaults to `1024x1024`, the smallest standard GPT image size.
+- `OPENAI_IMAGE_QUALITY` – optional image quality. Defaults to `low` to reduce image generation cost.
 - `META_GRAPH_VERSION` – optional (defaults to `v24.0`).
-- `META_PAGE_ID` – Facebook Page ID.
-- `META_PAGE_ACCESS_TOKEN` – Page access token with `pages_manage_posts`.
+- `META_APP_ID` – Meta app ID, stored as a Worker secret.
+- `META_APP_SECRET` – Meta app secret, stored as a Worker secret.
+- `META_OAUTH_REDIRECT_URI` – Worker callback URL, usually `https://your-worker.workers.dev/api/meta/oauth/callback`.
+- `META_PAGE_ID` – Facebook Page ID used to select the Page during OAuth. Existing `META_PAGE_ACCESS_TOKEN` secrets still work as fallback until a D1 OAuth connection exists.
 - `META_IG_USER_ID` – Instagram Business user ID.
 - `META_IG_ACCESS_TOKEN` – IG token (or reuse Page token if allowed).
+- `TOKEN_ALERT_WEBHOOK_URL` – optional webhook for token alerts. Without it, alerts are written to Worker logs and shown in the admin panel.
 
 ### Run locally
 
@@ -68,11 +76,12 @@ crons = ["*/5 * * * *"] # every 5 minutes
 
 When deployed, Cloudflare will call the `scheduled` handler and the Worker will:
 
-1. Read posts from D1 where `status = "scheduled"` and `scheduled_at <= now`.
-2. For each:
+1. Run the Facebook token health check once per day using Meta's token debug endpoint.
+2. Read posts from D1 where `status = "scheduled"` and `scheduled_at <= now`.
+3. For each:
    - POST to `/{PAGE_ID}/photos` for Facebook.
    - POST to `/{IG_USER_ID}/media` + `/media_publish` for Instagram.
-3. Mark the row as `published` or `failed`.
+4. Mark the row as `published` or `failed`.
 
 ---
 
@@ -100,14 +109,20 @@ Vite is configured to proxy `/api` to the Worker on port 8787 during development
    - Frontend calls `POST /api/ai/caption` with a simple prompt.
    - Worker calls OpenAI Chat Completions and returns a caption + hashtags.
 
-3. **Schedule**
+3. **AI image library**
+
+   - Choose how many images to generate.
+   - Worker saves generated images under the R2 `generated/` folder.
+   - Reuse saved images as drafts or delete them from the library.
+
+4. **Schedule**
 
    - Choose time with `datetime-local` input.
    - Choose platforms (Facebook / Instagram / both).
    - Click **“Save & send to scheduler”**.
    - Frontend calls `POST /api/posts` for each draft.
 
-4. **Queue**
+5. **Queue**
 
    - `GET /api/posts` shows everything in D1 with status + time.
    - The Worker Cron does the actual publishing.
@@ -119,9 +134,9 @@ Vite is configured to proxy `/api` to the Worker on port 8787 during development
 ## 3. Next steps / extensions
 
 - Add **real media upload** endpoint (`/api/upload`) that saves files to R2 or Cloudflare Images and returns a public URL.
-- Add Meta **OAuth Login** instead of putting tokens in env vars.
 - Improve AI prompts + allow multiple caption variants.
 - Add analytics (reach, likes, comments) using Insights endpoints and display charts on the dashboard.
+- Prepare Meta App Review and Business Verification if your production app requires approval for `pages_show_list`, `pages_read_engagement`, or `pages_manage_posts`.
 
 This skeleton gives you:
 

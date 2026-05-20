@@ -531,6 +531,7 @@ const DEFAULT_DRAFT_PROFILE_STORAGE_KEY = "draftDefaultProfile";
 const DEFAULT_DRAFT_SERVICE_STORAGE_KEY = "draftDefaultService";
 const LINK_OVERRIDE_STORAGE_KEY = "linkOverrides_v1";
 const OVERLAY_OVERRIDE_STORAGE_KEY = "overlayOverrides_v1";
+const DRAFT_STORAGE_KEY = "schedulerDrafts_v1";
 
 let overlayOverridesCache = {};
 function setOverlayOverridesCache(next) {
@@ -550,6 +551,69 @@ function getStoredDefaultProfile() {
 function getStoredDefaultService() {
   if (typeof window === "undefined") return "popcorn";
   return window.localStorage.getItem(DEFAULT_DRAFT_SERVICE_STORAGE_KEY) || "popcorn";
+}
+
+function createId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `draft-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function serializeDraftForStorage(draft) {
+  if (!draft) return null;
+  const previewUrl =
+    draft.previewUrl && !String(draft.previewUrl).startsWith("blob:")
+      ? draft.previewUrl
+      : draft.imageUrl || "";
+
+  return {
+    id: draft.id || createId(),
+    title: draft.title || draft.file?.name || "Draft post",
+    imageUrl: draft.imageUrl || "",
+    previewUrl,
+    caption: draft.caption || "",
+    hashtags: draft.hashtags || "",
+    platforms: Array.isArray(draft.platforms) ? draft.platforms : ["fb", "ig"],
+    scheduledLocal: draft.scheduledLocal || "",
+    profileKey: draft.profileKey || DEFAULT_PROFILE_KEY,
+    status: draft.status || "draft",
+    sourcePrompt: draft.sourcePrompt || "",
+    aiLoading: false,
+    aiError: "",
+    serviceType: draft.serviceType || "popcorn",
+    ctaMode: draft.ctaMode || "lead",
+    offerText: draft.offerText || "",
+    neighbourhood: draft.neighbourhood || "",
+    serviceUrl: draft.serviceUrl || "",
+    imageLayout: draft.imageLayout || "photo",
+    postType: draft.postType || "feed",
+    bannerStyle: draft.bannerStyle || "gentle",
+    overlayId: draft.overlayId || "",
+  };
+}
+
+function readStoredDrafts() {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(serializeDraftForStorage).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredDrafts(drafts) {
+  if (typeof window === "undefined") return;
+  try {
+    const serializable = drafts.map(serializeDraftForStorage).filter(Boolean);
+    window.localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(serializable));
+  } catch {
+    // ignore storage failures
+  }
 }
 
 function getServiceLabel(value) {
@@ -1010,7 +1074,7 @@ function App() {
     () => (typeof window !== "undefined" && window.localStorage.getItem("accessKey")) || ""
   );
   const [keyInput, setKeyInput] = useState("");
-  const [files, setFiles] = useState([]);
+  const [files, setFiles] = useState(() => readStoredDrafts());
   const [scheduledPosts, setScheduledPosts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [cancelingId, setCancelingId] = useState(null);
@@ -1134,6 +1198,10 @@ function App() {
       loadFacebookConnections();
     }
   }, [accessKey]);
+
+  useEffect(() => {
+    writeStoredDrafts(files);
+  }, [files]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !accessKey) return;
@@ -1277,7 +1345,7 @@ function App() {
       const serviceUrl = getRandomServiceUrl(defaultProfileKey, defaultService);
 
       return {
-        id: crypto.randomUUID(),
+        id: createId(),
         file,
         previewUrl: URL.createObjectURL(file),
         caption: "",
@@ -1315,6 +1383,13 @@ function App() {
 
   function handleRemoveDraft(id) {
     setFiles((prev) => prev.filter((f) => f.id !== id));
+  }
+
+  function handleResetDrafts() {
+    setFiles([]);
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(DRAFT_STORAGE_KEY);
+    }
   }
 
   function handleSetUploadDefaultsFromPlan() {
@@ -1493,9 +1568,12 @@ ${lengthInstruction}
 
 Write ONLY the caption body text for a Facebook/Instagram post:
 - Sound like a real local contractor speaking in a simple, human way (not a big marketing agency).
-- Mention the city/area naturally in the text.
-- Focus on the homeowner's problem and the result (clean ceilings, smooth walls, fresh paint, better look before selling or moving in).
-- Vary your hook style so the first line doesn't sound like a template.
+- Write 2 short sentences.
+- Start with a homeowner problem, seasonal/local situation, or visible result.
+- Mention the service and city/area naturally once, like a person would say it. Do not stuff keywords.
+- Focus on why someone would search for this service now: old popcorn ceilings, drywall damage, fresh paint, wallpaper removal, move-in updates, listing prep, or renovation cleanup when relevant.
+- Make the benefit clear: cleaner look, brighter rooms, smooth ceilings/walls, less mess, or getting the home ready before selling or moving in.
+- End with a natural call to action to DM, call, or ask for a quote.
 - Do NOT include any website URL.
 - Do NOT include hashtags.
 ${extraDifferent}
@@ -1578,6 +1656,7 @@ ${extraDifferent}
   }
 
   async function saveSchedulesForDrafts(drafts) {
+    const scheduledDraftIds = [];
     for (const draft of drafts) {
       const scheduledUnix = toUnixSeconds(draft.scheduledLocal);
       if (!scheduledUnix) continue;
@@ -1621,12 +1700,18 @@ ${extraDifferent}
         serviceUrl,
       };
 
-      await fetch(apiUrl("/api/posts"), {
+      const res = await fetch(apiUrl("/api/posts"), {
         method: "POST",
         headers: makeHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(body),
       });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Scheduler save failed for ${body.title}: ${text || res.status}`);
+      }
+      scheduledDraftIds.push(draft.id);
     }
+    return scheduledDraftIds;
   }
 
   async function handleFullAuto() {
@@ -1654,10 +1739,10 @@ ${extraDifferent}
       drafts = computeAutoScheduleForDrafts(drafts, autoStart, autoInterval, profileLatest);
 
       // 3) Save to scheduler
-      await saveSchedulesForDrafts(drafts);
+      const scheduledDraftIds = await saveSchedulesForDrafts(drafts);
 
       // 4) Update UI + reload queue
-      setFiles(drafts);
+      setFiles(drafts.filter((draft) => !scheduledDraftIds.includes(draft.id)));
       await loadScheduled();
 
       alert("Full auto complete: captions + schedule + send ✅");
@@ -1710,7 +1795,7 @@ ${extraDifferent}
     setFiles((prev) => [
       ...prev,
       {
-        id: crypto.randomUUID(),
+        id: createId(),
         file: null,
         imageUrl: url,
         previewUrl: url,
@@ -1970,7 +2055,8 @@ ${extraDifferent}
   async function handleSaveSchedules() {
     setLoading(true);
     try {
-      await saveSchedulesForDrafts(files);
+      const scheduledDraftIds = await saveSchedulesForDrafts(files);
+      setFiles((prev) => prev.filter((draft) => !scheduledDraftIds.includes(draft.id)));
       await loadScheduled();
       alert("Drafts sent to scheduler (stored in D1). Cron will publish when time comes.");
     } catch (err) {
@@ -2189,6 +2275,141 @@ ${extraDifferent}
     } finally {
       setFacebookTokenCheckLoading(false);
     }
+  }
+
+  function renderFacebookConnectSection() {
+    return (
+      <section className="card facebook-connect-card">
+        <div className="section-heading-row">
+          <div>
+            <p className="eyebrow">Facebook login</p>
+            <h2>2. Connect Facebook Pages</h2>
+          </div>
+          <button
+            type="button"
+            className="secondary"
+            onClick={handleCheckFacebookTokens}
+            disabled={facebookTokenCheckLoading}
+          >
+            {facebookTokenCheckLoading ? "Checking..." : "Check token health"}
+          </button>
+        </div>
+        <p className="muted">
+          Click the red button for each profile. If Facebook shows previous settings, choose <strong>Edit settings</strong>, select the correct Page, and allow all Page permissions.
+        </p>
+        {facebookNotice && <p className="success-text small">{facebookNotice}</p>}
+        <div className="profile-status-list">
+          {Object.entries(PROFILE_CONFIG).map(([key, cfg]) => {
+            const status = profileStatus[key];
+            const connection = getFacebookConnection(key);
+            const reconnectRequired = !!connection?.reconnectRequired;
+            const isConnected = !!connection && !reconnectRequired;
+            return (
+              <div key={key} className="profile-status-row">
+                <div className="profile-status-main">
+                  <div className="profile-status-title">
+                    <strong>{cfg.label}</strong>
+                    <span className={`facebook-status-dot ${isConnected ? "connected" : "needs-action"}`}>
+                      {isConnected ? "Connected" : "Needs connection"}
+                    </span>
+                  </div>
+                  <div className="profile-status-detail">
+                    <div>
+                      <strong>Page:</strong>{" "}
+                      {!connection
+                        ? "Not connected"
+                        : reconnectRequired
+                        ? "Reconnect required"
+                        : `${connection.tokenStatus || "connected"} (${connection.pageName || connection.pageId})`}
+                    </div>
+                    {connection && (
+                      <>
+                        <div>
+                          <strong>User:</strong> {connection.userName || connection.userId || "Unknown"}
+                        </div>
+                        <div>
+                          <strong>Granted:</strong> {(connection.grantedPermissions || []).join(", ") || "Unknown"}
+                        </div>
+                        {!!connection.missingPermissions?.length && (
+                          <div className="error-text">
+                            Missing: {connection.missingPermissions.join(", ")}
+                          </div>
+                        )}
+                        {connection.lastError && <div className="error-text">{connection.lastError}</div>}
+                      </>
+                    )}
+                  </div>
+                  {status && (
+                    <div className="profile-status-detail">
+                      <div>
+                        <strong>Facebook:</strong>{" "}
+                        {!status.fb?.configured
+                          ? "Not configured"
+                          : status.fb.ok
+                          ? `OK (id: ${status.fb.data?.id || "?"})`
+                          : "Error"}
+                      </div>
+                      <div>
+                        <strong>Instagram:</strong>{" "}
+                        {!status.ig?.configured
+                          ? "Not configured"
+                          : status.ig.ok
+                          ? `OK (id: ${status.ig.data?.id || "?"})`
+                          : "Error"}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="profile-status-actions">
+                  <button
+                    type="button"
+                    className="facebook-connect-button"
+                    onClick={() => handleConnectFacebook(key)}
+                    disabled={facebookConnectKey === key}
+                  >
+                    {facebookConnectKey === key
+                      ? "Opening..."
+                      : connection
+                      ? "Reconnect Facebook"
+                      : "Connect Facebook"}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => handleCheckProfileStatus(key)}
+                    disabled={profileCheckingKey === key}
+                  >
+                    {profileCheckingKey === key ? "Checking..." : "Check tokens"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <details className="compact-details facebook-setup-details">
+          <summary>
+            <span>Setup notes</span>
+            <small>Required permissions and Meta review notes</small>
+          </summary>
+          <p className="muted">
+            Required permissions: pages_show_list, pages_read_engagement, pages_manage_posts.
+          </p>
+          <ol>
+            <li>Set Worker secrets:
+              <pre>
+npx wrangler secret put META_APP_ID
+npx wrangler secret put META_APP_SECRET
+              </pre>
+            </li>
+            <li>Set <code>META_OAUTH_REDIRECT_URI</code> to your Worker callback URL:
+              <pre>https://your-worker.workers.dev/api/meta/oauth/callback</pre>
+            </li>
+            <li>Add that exact callback URL to your Meta app OAuth redirect settings.</li>
+            <li>For live production use, prepare Meta App Review and Business Verification for Page publishing permissions if Meta requires it.</li>
+          </ol>
+        </details>
+      </section>
+    );
   }
 
   if (!accessKey) {
@@ -2527,7 +2748,7 @@ ${extraDifferent}
                   const serviceUrl = getRandomServiceUrl(planProfileKey, svc.value);
 
                   newDrafts.push({
-                    id: crypto.randomUUID(),
+                    id: createId(),
                     file: null,
                     imageUrl: "",
                     previewUrl: "",
@@ -2629,6 +2850,13 @@ ${extraDifferent}
                   disabled={bulkCaptionLoading}
                 >
                   {bulkCaptionLoading ? "Captioning..." : "AI caption all"}
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={handleResetDrafts}
+                >
+                  Reset drafts
                 </button>
                 <button
                   className="primary"
@@ -3038,8 +3266,10 @@ ${extraDifferent}
           )}
         </section>
 
+        {renderFacebookConnectSection()}
+
         <section className="card">
-          <h2>2. Queue / calendar (from D1)</h2>
+          <h2>3. Queue / calendar (from D1)</h2>
           <p>These posts are stored in your D1 DB and picked up by the Worker Cron when time comes.</p>
           {Object.keys(profileLatest).length > 0 && (
             <div className="profile-summary">
@@ -3161,206 +3391,6 @@ ${extraDifferent}
             )}
           </section>
 
-        <details className="card compact-details">
-          <summary>
-            <span>Token helper and account checks</span>
-            <small>Use this only when publishing fails or tokens need maintenance.</small>
-          </summary>
-          <p className="muted">
-            Facebook Page publishing now uses Meta Login. Connect each profile once, and the Worker stores the tested Page token in D1 before using it for publishing.
-          </p>
-          {facebookNotice && <p className="success-text small">{facebookNotice}</p>}
-          <div className="profile-status-list">
-            <h3>Facebook OAuth connections</h3>
-            <p className="muted">
-              Required permissions: pages_show_list, pages_read_engagement, pages_manage_posts.
-            </p>
-            {Object.entries(PROFILE_CONFIG).map(([key, cfg]) => {
-              const status = profileStatus[key];
-              const connection = getFacebookConnection(key);
-              const reconnectRequired = !!connection?.reconnectRequired;
-              return (
-                <div key={key} className="profile-status-row">
-                  <div className="profile-status-main">
-                    <div className="profile-status-title">
-                      <strong>{cfg.label}</strong>
-                      <span className="profile-status-key">({key})</span>
-                    </div>
-                    <div className="profile-status-detail">
-                      <div>
-                        <strong>Facebook OAuth:</strong>{" "}
-                        {!connection
-                          ? "Not connected"
-                          : reconnectRequired
-                          ? "Reconnect required"
-                          : `${connection.tokenStatus || "connected"} (${connection.pageName || connection.pageId})`}
-                      </div>
-                      {connection && (
-                        <>
-                          <div>
-                            <strong>User:</strong> {connection.userName || connection.userId || "Unknown"}
-                          </div>
-                          <div>
-                            <strong>Last checked:</strong> {formatUnixDate(connection.lastCheckedAt)}
-                          </div>
-                          <div>
-                            <strong>Granted:</strong> {(connection.grantedPermissions || []).join(", ") || "Unknown"}
-                          </div>
-                          {!!connection.missingPermissions?.length && (
-                            <div className="error-text">
-                              Missing: {connection.missingPermissions.join(", ")}
-                            </div>
-                          )}
-                          {connection.lastError && <div className="error-text">{connection.lastError}</div>}
-                        </>
-                      )}
-                    </div>
-                    {status && (
-                      <div className="profile-status-detail">
-                        <div>
-                          <strong>Facebook:</strong>{" "}
-                          {!status.fb?.configured
-                            ? "Not configured"
-                            : status.fb.ok
-                            ? `OK (id: ${status.fb.data?.id || "?"})`
-                            : "Error"}
-                        </div>
-                        <div>
-                          <strong>Instagram:</strong>{" "}
-                          {!status.ig?.configured
-                            ? "Not configured"
-                            : status.ig.ok
-                            ? `OK (id: ${status.ig.data?.id || "?"})`
-                            : "Error"}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  <div className="profile-status-actions">
-                    <button
-                      type="button"
-                      className={reconnectRequired ? "danger" : "primary"}
-                      onClick={() => handleConnectFacebook(key)}
-                      disabled={facebookConnectKey === key}
-                    >
-                      {facebookConnectKey === key
-                        ? "Opening..."
-                        : connection
-                        ? "Reconnect Facebook"
-                        : "Connect Facebook"}
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary"
-                      onClick={() => handleCheckProfileStatus(key)}
-                      disabled={profileCheckingKey === key}
-                    >
-                      {profileCheckingKey === key ? "Checking..." : "Check tokens"}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-            <div className="button-row">
-              <button
-                type="button"
-                className="secondary"
-                onClick={handleCheckFacebookTokens}
-                disabled={facebookTokenCheckLoading}
-              >
-                {facebookTokenCheckLoading ? "Checking..." : "Run Facebook token health check"}
-              </button>
-            </div>
-          </div>
-          <div className="token-health">
-            <h3>Token status (based on recent posts)</h3>
-            <ul>
-              {["calgary", "epf", "wallpaper"].map((key) => {
-                const status = tokenHealth[key] || "unknown";
-                const label = PROFILE_CONFIG[key]?.label || key;
-                return (
-                  <li key={key} className={`token-pill token-${status}`}>
-                    <span>{label}</span>
-                    <span className="token-status-label">
-                      {status === "ok" && "✅ Looks good – recent posts succeeded"}
-                      {status === "warning" && "⚠️ Older errors, but later posts succeeded"}
-                      {status === "error" && "❌ Recent failures – check tokens & logs"}
-                      {status === "unknown" && "— No recent posts to check"}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-          <div className="token-checker">
-            <h3>Check tokens</h3>
-            <div className="token-check-row">
-              <label className="field">
-                <span>Profile</span>
-                <select value={profileCheckKey} onChange={(e) => setProfileCheckKey(e.target.value)}>
-                  {PROFILE_OPTIONS.map((opt) => (
-                    <option key={opt.key} value={opt.key}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                className="secondary"
-                onClick={handleProfileCheck}
-                disabled={profileCheckLoading}
-              >
-                {profileCheckLoading ? "Checking..." : "Check tokens"}
-              </button>
-            </div>
-            {profileCheckError && <p className="error-text">{profileCheckError}</p>}
-            {profileCheckResult && (
-              <div className="token-check-result">
-                <pre>{JSON.stringify(profileCheckResult, null, 2)}</pre>
-              </div>
-            )}
-          </div>
-          <details className="help-tip">
-            <summary aria-label="Token help">?</summary>
-            <div className="help-text">
-              For production Page publishing, Meta may require App Review approval for requested Page permissions and Business Verification.
-            </div>
-          </details>
-          <div className="token-instructions">
-            <ol>
-              <li>Set Worker secrets:
-                <pre>
-npx wrangler secret put META_APP_ID
-npx wrangler secret put META_APP_SECRET
-                </pre>
-              </li>
-              <li>Set <code>META_OAUTH_REDIRECT_URI</code> to your Worker callback URL:
-                <pre>https://your-worker.workers.dev/api/meta/oauth/callback</pre>
-              </li>
-              <li>Add that exact callback URL to your Meta app OAuth redirect settings.</li>
-              <li>For live production use, prepare Meta App Review and Business Verification for Page publishing permissions if Meta requires it.</li>
-            </ol>
-          </div>
-          <div className="token-buttons">
-            <a
-              href="https://developers.facebook.com/tools/explorer/"
-              target="_blank"
-              rel="noreferrer"
-              className="secondary"
-            >
-              Open Graph Explorer
-            </a>
-            <a
-              href="https://developers.facebook.com/tools/debug/accesstoken/"
-              target="_blank"
-              rel="noreferrer"
-              className="secondary"
-            >
-              Access Token Debugger
-            </a>
-          </div>
-        </details>
       </main>
     </div>
   );
