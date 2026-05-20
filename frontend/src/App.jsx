@@ -482,6 +482,66 @@ function normalizeCaptionBody(body) {
   return (body || "").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function captionSimilarity(a, b) {
+  const stopWords = new Set([
+    "the",
+    "and",
+    "for",
+    "with",
+    "your",
+    "you",
+    "our",
+    "that",
+    "this",
+    "are",
+    "from",
+    "into",
+    "home",
+    "homes",
+    "room",
+    "rooms",
+  ]);
+  const tokenize = (value) =>
+    normalizeCaptionBody(value)
+      .split(/[^a-z0-9]+/)
+      .filter((word) => word.length > 3 && !stopWords.has(word));
+  const aWords = new Set(tokenize(a));
+  const bWords = new Set(tokenize(b));
+  if (!aWords.size || !bWords.size) return 0;
+  let overlap = 0;
+  for (const word of aWords) {
+    if (bWords.has(word)) overlap += 1;
+  }
+  return overlap / Math.min(aWords.size, bWords.size);
+}
+
+const CAPTION_ANGLES = [
+  "before-and-after result from a real job",
+  "homeowner getting ready to sell",
+  "new owner fixing the place before moving in",
+  "older ceiling or wall making a clean room look dated",
+  "dust control, prep, and clean workmanship",
+  "small repair that makes the whole room look fresher",
+  "local quote request for a nearby homeowner",
+  "renovation cleanup after other trades are finished",
+];
+
+const CAPTION_OPENERS = [
+  "Start with a concrete detail from the job site.",
+  "Start with the homeowner's reason for calling.",
+  "Start with the visible result after the work.",
+  "Start with a local seasonal or moving/selling situation.",
+  "Start with a plain question a homeowner might ask.",
+];
+
+const CAPTION_CTA_STYLES = [
+  "End by inviting people to send a photo for a quick opinion.",
+  "End by asking homeowners to message for a local quote.",
+  "End by offering to check the room and explain the options.",
+  "End by telling people they can book a clean, simple estimate.",
+  "End softly, like a contractor speaking to a neighbour.",
+];
+
 function getRandomServiceUrl(profileKey, serviceType) {
   const overrides = linkOverridesCache[profileKey] || {};
   const profilePools = LINK_POOLS[profileKey] || {};
@@ -1520,6 +1580,7 @@ function computeAutoScheduleForDrafts(drafts, autoStartValue, autoIntervalValue,
 
     const serviceUrl = getRandomServiceUrl(draft.profileKey, draft.serviceType);
     const hashtags = buildHashtags(draft.profileKey, draft.serviceType);
+    const localArea = (draft.neighbourhood || pickNeighbourhood(draft.profileKey) || profileCfg.city || "").trim();
 
     const history = loadCaptionHistory(draft.profileKey, draft.serviceType);
 
@@ -1548,7 +1609,11 @@ function computeAutoScheduleForDrafts(drafts, autoStartValue, autoIntervalValue,
     let finalCaption = "";
     let lastBody = "";
 
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const angle = pickRandom(CAPTION_ANGLES);
+      const opener = pickRandom(CAPTION_OPENERS);
+      const ctaStyle = pickRandom(CAPTION_CTA_STYLES);
+      const recentExamples = history.slice(0, 5).map((item, index) => `${index + 1}. ${item}`).join("\n");
       const extraDifferent =
         attempt === 2 && lastBody
           ? `
@@ -1556,26 +1621,34 @@ IMPORTANT: The previous attempt was too similar to older posts. Write a complete
 
 "${lastBody}"
 `
+          : attempt === 3
+          ? `
+IMPORTANT: The last versions were still too close to earlier captions. Use a different hook, different verb choices, and a different CTA. Do not start with "If your", "Old popcorn", or "A smooth ceiling".
+`
           : "";
 
       const bodyPrompt = `
 Service: ${serviceLabel}.
 Brand: ${profileCfg.brand}.
 Area: ${profileCfg.city} (${profileCfg.seoLocation}).
+Local focus for this draft: ${localArea || profileCfg.city}.
+Caption angle: ${angle}.
+Opening direction: ${opener}
+CTA direction: ${ctaStyle}
 ${campaignDescription}
 
 ${lengthInstruction}
 
 Write ONLY the caption body text for a Facebook/Instagram post:
 - Sound like a real local contractor speaking in a simple, human way (not a big marketing agency).
-- Write 2 short sentences.
-- Start with a homeowner problem, seasonal/local situation, or visible result.
-- Mention the service and city/area naturally once, like a person would say it. Do not stuff keywords.
-- Focus on why someone would search for this service now: old popcorn ceilings, drywall damage, fresh paint, wallpaper removal, move-in updates, listing prep, or renovation cleanup when relevant.
-- Make the benefit clear: cleaner look, brighter rooms, smooth ceilings/walls, less mess, or getting the home ready before selling or moving in.
-- End with a natural call to action to DM, call, or ask for a quote.
+- Use varied sentence rhythm. Avoid repeating the same first words used in other captions.
+- Mention one natural local SEO phrase once, such as "${serviceLabel} in ${localArea || profileCfg.city}" or "${profileCfg.city} ${serviceLabel}", only if it reads naturally.
+- Include a useful homeowner detail: prep, dust control, furniture protection, smooth finish, repair steps, move-in timing, listing prep, or cleanup.
+- Do not overpromise. Keep it practical and specific.
 - Do NOT include any website URL.
 - Do NOT include hashtags.
+- Avoid sounding like these recent captions:
+${recentExamples || "No recent captions saved yet."}
 ${extraDifferent}
 `;
 
@@ -1586,6 +1659,9 @@ ${extraDifferent}
           prompt: bodyPrompt,
           platform: "both",
           profile: draft.profileKey,
+          serviceType: draft.serviceType,
+          ctaMode: draft.ctaMode,
+          neighbourhood: localArea,
         }),
       });
 
@@ -1611,11 +1687,14 @@ ${extraDifferent}
       lastBody = body;
 
       const normalized = normalizeCaptionBody(body);
-      const seen = history.includes(normalized);
+      const seen = history.some(
+        (oldCaption) =>
+          oldCaption === normalized || captionSimilarity(oldCaption, normalized) > 0.68,
+      );
 
       const composed = body + (serviceUrl ? `\n\n${serviceUrl}` : "");
 
-      if (!seen || attempt === 2) {
+      if (!seen || attempt === 3) {
         finalCaption = composed;
         saveCaptionToHistory(draft.profileKey, draft.serviceType, normalized);
         break;
