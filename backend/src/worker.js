@@ -65,6 +65,49 @@ async function ensureSchema(env) {
       // console.log("log column exists or cannot be added:", e.message);
     }
 
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS facebook_connections (
+        profile_key TEXT PRIMARY KEY,
+        page_id TEXT NOT NULL,
+        page_name TEXT,
+        page_access_token TEXT NOT NULL,
+        page_token_expires_at INTEGER,
+        user_id TEXT,
+        user_name TEXT,
+        user_access_token TEXT,
+        user_token_expires_at INTEGER,
+        granted_permissions TEXT,
+        missing_permissions TEXT,
+        token_status TEXT NOT NULL DEFAULT 'unknown',
+        reconnect_required INTEGER NOT NULL DEFAULT 0,
+        last_checked_at INTEGER,
+        last_error TEXT,
+        alert_sent_at INTEGER,
+        debug_payload TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`
+    ).run();
+
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS facebook_oauth_states (
+        state TEXT PRIMARY KEY,
+        profile_key TEXT NOT NULL,
+        page_id TEXT,
+        return_url TEXT,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      )`
+    ).run();
+
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS meta_maintenance (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at INTEGER NOT NULL
+      )`
+    ).run();
+
     schemaReady = true;
     schemaCheckPromise = null;
   })();
@@ -103,6 +146,11 @@ export default {
       // Public media access should bypass auth
       if (pathname.startsWith("/media/") && method === "GET") {
         return serveMedia(pathname, env);
+      }
+
+      if (pathname === "/api/meta/oauth/callback" && method === "GET") {
+        await ensureSchema(env);
+        return handleFacebookOAuthCallback(request, env);
       }
 
       // Minimal auth: APP_ACCESS_KEY
@@ -194,7 +242,24 @@ export default {
             }
 
             if (pathname === "/api/meta/check-profile" && (method === "POST" || method === "GET")) {
+                await ensureSchema(env);
                 return validateProfile(request, env);
+            }
+
+            if (pathname === "/api/meta/connections" && method === "GET") {
+                await ensureSchema(env);
+                return listFacebookConnections(env);
+            }
+
+            if (pathname === "/api/meta/oauth/start" && method === "POST") {
+                await ensureSchema(env);
+                return startFacebookOAuth(request, env);
+            }
+
+            if (pathname === "/api/meta/check-tokens" && method === "POST") {
+                await ensureSchema(env);
+                const result = await runDueTokenHealthChecks(env, { force: true });
+                return new Response(JSON.stringify(result), { headers: JSON_HEADERS });
             }
 
             if (pathname === "/api/scheduler/run" && method === "POST") {
@@ -216,6 +281,7 @@ export default {
     async scheduled(event, env, ctx) {
         try {
             await ensureSchema(env);
+            await runDueTokenHealthChecks(env);
             await runScheduler(env);
         } catch (err) {
             console.error("Scheduler error:", err);
@@ -407,7 +473,7 @@ async function publishNow(id, env) {
   const now = nowUnix();
 
   const profileKey = existing.profile_key || "calgary";
-  const profileConfig = getProfileConfig(env, profileKey);
+  const profileConfig = await getProfileConfig(env, profileKey);
 
   const platforms = (existing.platforms || "")
     .split(",")
@@ -860,12 +926,25 @@ async function validateProfile(request, env) {
   }
 
   profileKey = profileKey.trim().toLowerCase();
-  const cfg = getProfileConfig(env, profileKey);
+  const cfg = await getProfileConfig(env, profileKey);
 
   const fbConfigured = !!(cfg.fbPageId && cfg.fbToken);
   const igConfigured = !!(cfg.igUserId && cfg.igToken);
 
-  const fb = { configured: fbConfigured };
+  const fb = {
+    configured: fbConfigured,
+    source: cfg.fbSource || "env",
+    tokenStatus: cfg.fbConnection?.token_status,
+    reconnectRequired: !!cfg.fbConnection?.reconnect_required,
+    connectedUser: cfg.fbConnection?.user_id
+      ? { id: cfg.fbConnection.user_id, name: cfg.fbConnection.user_name || "" }
+      : null,
+    grantedPermissions: parseJsonArray(cfg.fbConnection?.granted_permissions),
+    missingPermissions: parseJsonArray(cfg.fbConnection?.missing_permissions),
+    pageName: cfg.fbConnection?.page_name || null,
+    lastCheckedAt: cfg.fbConnection?.last_checked_at || null,
+    lastError: cfg.fbConnection?.last_error || null,
+  };
   const ig = { configured: igConfigured };
 
   if (fbConfigured) {
@@ -924,6 +1003,7 @@ async function validateProfile(request, env) {
     profileKey,
     fb,
     ig,
+    connection: sanitizeConnection(cfg.fbConnection),
   };
 
   return new Response(JSON.stringify(result), { status: 200, headers: JSON_HEADERS });
@@ -954,6 +1034,7 @@ async function runScheduler(env) {
   for (const post of results) {
     const logs = [];
     const nowTs = nowUnix();
+    let publishError = null;
 
     try {
       const platforms = (post.platforms || "")
@@ -962,7 +1043,7 @@ async function runScheduler(env) {
         .filter(Boolean);
 
       const profileKey = post.profile_key || "calgary";
-      const profileConfig = getProfileConfig(env, profileKey);
+      const profileConfig = await getProfileConfig(env, profileKey);
 
       if (platforms.includes("fb")) {
         const fbRes = await publishToFacebook(post, env, profileConfig);
@@ -971,6 +1052,7 @@ async function runScheduler(env) {
             `FB OK: ${new Date(nowTs * 1000).toISOString()} -> ${fbRes.data?.id || JSON.stringify(fbRes.data)}`
           );
         } else {
+          publishError = publishError || `FB: ${fbRes?.detail || fbRes?.error || "unknown"}`;
           logs.push(
             `FB ERROR: ${new Date(nowTs * 1000).toISOString()} -> ${fbRes?.detail || fbRes?.error || ""}`
           );
@@ -984,6 +1066,7 @@ async function runScheduler(env) {
             `IG OK: ${new Date(nowTs * 1000).toISOString()} -> ${igRes.data?.id || JSON.stringify(igRes.data)}`
           );
         } else {
+          publishError = publishError || `IG: ${igRes?.detail || igRes?.error || "unknown"}`;
           logs.push(
             `IG ERROR: ${new Date(nowTs * 1000).toISOString()} -> ${igRes?.detail || igRes?.error || ""}`
           );
@@ -992,10 +1075,11 @@ async function runScheduler(env) {
 
       const logText = logs.join("\n");
 
+      const nextStatus = publishError ? "failed" : "published";
       await env.DB.prepare(
-        "UPDATE posts SET status = ?, published_at = ?, updated_at = ?, error = NULL, log = ? WHERE id = ?"
+        "UPDATE posts SET status = ?, published_at = ?, updated_at = ?, error = ?, log = ? WHERE id = ?"
       )
-        .bind("published", nowTs, nowTs, logText, post.id)
+        .bind(nextStatus, publishError ? null : nowTs, nowTs, publishError, logText, post.id)
         .run();
     } catch (err) {
       console.error("Error publishing post", post.id, err);
@@ -1102,14 +1186,74 @@ function getGraphConfig(env) {
   return { version, base };
 }
 
-function getProfileConfig(env, profileKey) {
+function graphUrl(env, path) {
+  const { base, version } = getGraphConfig(env);
+  return `${base}/${version}${path}`;
+}
+
+const REQUIRED_FACEBOOK_PAGE_PERMISSIONS = [
+  "pages_show_list",
+  "pages_read_engagement",
+  "pages_manage_posts",
+];
+
+function parseJsonArray(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function sanitizeConnection(row) {
+  if (!row) return null;
+  return {
+    profileKey: row.profile_key,
+    pageId: row.page_id,
+    pageName: row.page_name,
+    pageTokenExpiresAt: row.page_token_expires_at,
+    userId: row.user_id,
+    userName: row.user_name,
+    userTokenExpiresAt: row.user_token_expires_at,
+    grantedPermissions: parseJsonArray(row.granted_permissions),
+    missingPermissions: parseJsonArray(row.missing_permissions),
+    tokenStatus: row.token_status,
+    reconnectRequired: !!row.reconnect_required,
+    lastCheckedAt: row.last_checked_at,
+    lastError: row.last_error,
+    alertSentAt: row.alert_sent_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function getFacebookConnection(env, profileKey) {
+  return env.DB.prepare("SELECT * FROM facebook_connections WHERE profile_key = ?")
+    .bind((profileKey || "calgary").toLowerCase())
+    .first();
+}
+
+async function getProfileConfig(env, profileKey) {
   const key = (profileKey || "calgary").toLowerCase();
+  const connection = await getFacebookConnection(env, key);
+  const connectedFb = connection && connection.page_id && connection.page_access_token
+    ? {
+        fbPageId: connection.page_id,
+        fbToken: connection.page_access_token,
+        fbSource: "db",
+        fbConnection: connection,
+      }
+    : {};
 
   // 1) Backward-compatible known profiles
   if (key === "calgary") {
     return {
-      fbPageId: env.META_PAGE_ID,
-      fbToken: env.META_PAGE_ACCESS_TOKEN,
+      fbPageId: connectedFb.fbPageId || env.META_PAGE_ID,
+      fbToken: connectedFb.fbToken || env.META_PAGE_ACCESS_TOKEN,
+      fbSource: connectedFb.fbSource || "env",
+      fbConnection: connection,
       igUserId: env.META_IG_USER_ID,
       igToken: env.META_IG_ACCESS_TOKEN,
     };
@@ -1117,8 +1261,10 @@ function getProfileConfig(env, profileKey) {
 
   if (key === "epf") {
     return {
-      fbPageId: env.META_PAGE_ID_EPF,
-      fbToken: env.META_PAGE_ACCESS_TOKEN_EPF,
+      fbPageId: connectedFb.fbPageId || env.META_PAGE_ID_EPF,
+      fbToken: connectedFb.fbToken || env.META_PAGE_ACCESS_TOKEN_EPF,
+      fbSource: connectedFb.fbSource || "env",
+      fbConnection: connection,
       igUserId: env.META_IG_USER_ID_EPF,
       igToken: env.META_IG_ACCESS_TOKEN_EPF,
     };
@@ -1126,8 +1272,10 @@ function getProfileConfig(env, profileKey) {
 
   if (key === "wallpaper") {
     return {
-      fbPageId: env.META_PAGE_ID_WALLPAPER,
-      fbToken: env.META_PAGE_ACCESS_TOKEN_WALLPAPER,
+      fbPageId: connectedFb.fbPageId || env.META_PAGE_ID_WALLPAPER,
+      fbToken: connectedFb.fbToken || env.META_PAGE_ACCESS_TOKEN_WALLPAPER,
+      fbSource: connectedFb.fbSource || "env",
+      fbConnection: connection,
       igUserId: env.META_IG_USER_ID_WALLPAPER,
       igToken: env.META_IG_ACCESS_TOKEN_WALLPAPER,
     };
@@ -1148,8 +1296,10 @@ function getProfileConfig(env, profileKey) {
   if (fbPageId || fbToken || igUserId || igToken) {
     // If any of the specific vars exist, build config using them
     return {
-      fbPageId: fbPageId || env.META_PAGE_ID,
-      fbToken: fbToken || env.META_PAGE_ACCESS_TOKEN,
+      fbPageId: connectedFb.fbPageId || fbPageId || env.META_PAGE_ID,
+      fbToken: connectedFb.fbToken || fbToken || env.META_PAGE_ACCESS_TOKEN,
+      fbSource: connectedFb.fbSource || "env",
+      fbConnection: connection,
       igUserId: igUserId || env.META_IG_USER_ID,
       igToken: igToken || env.META_IG_ACCESS_TOKEN,
     };
@@ -1157,11 +1307,518 @@ function getProfileConfig(env, profileKey) {
 
   // 3) Fallback to Calgary if unknown key and no profile-specific env
   return {
-    fbPageId: env.META_PAGE_ID,
-    fbToken: env.META_PAGE_ACCESS_TOKEN,
+    fbPageId: connectedFb.fbPageId || env.META_PAGE_ID,
+    fbToken: connectedFb.fbToken || env.META_PAGE_ACCESS_TOKEN,
+    fbSource: connectedFb.fbSource || "env",
+    fbConnection: connection,
     igUserId: env.META_IG_USER_ID,
     igToken: env.META_IG_ACCESS_TOKEN,
   };
+}
+
+function getAppAccessToken(env) {
+  if (env.META_APP_ACCESS_TOKEN) return env.META_APP_ACCESS_TOKEN;
+  if (env.META_APP_ID && env.META_APP_SECRET) return `${env.META_APP_ID}|${env.META_APP_SECRET}`;
+  return "";
+}
+
+function getOAuthRedirectUri(request, env) {
+  return env.META_OAUTH_REDIRECT_URI || `${new URL(request.url).origin}/api/meta/oauth/callback`;
+}
+
+async function listFacebookConnections(env) {
+  const { results } = await env.DB.prepare("SELECT * FROM facebook_connections ORDER BY profile_key ASC").all();
+  return new Response(JSON.stringify((results || []).map(sanitizeConnection)), { headers: JSON_HEADERS });
+}
+
+async function startFacebookOAuth(request, env) {
+  if (!env.META_APP_ID || !env.META_APP_SECRET) {
+    return new Response(JSON.stringify({ error: "meta_app_not_configured" }), {
+      status: 500,
+      headers: JSON_HEADERS,
+    });
+  }
+
+  const body = await request.json().catch(() => ({}));
+  const profileKey = String(body.profileKey || "calgary").trim().toLowerCase();
+  const cfg = await getProfileConfig(env, profileKey);
+  const pageId = String(body.pageId || cfg.fbPageId || "").trim();
+  const returnUrl = String(body.returnUrl || "").trim();
+  const state = crypto.randomUUID();
+  const now = nowUnix();
+
+  await env.DB.prepare(
+    `INSERT INTO facebook_oauth_states (state, profile_key, page_id, return_url, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  )
+    .bind(state, profileKey, pageId || null, returnUrl || null, now, now + 10 * 60)
+    .run();
+
+  const redirectUri = getOAuthRedirectUri(request, env);
+  const params = new URLSearchParams({
+    client_id: env.META_APP_ID,
+    redirect_uri: redirectUri,
+    state,
+    response_type: "code",
+    scope: REQUIRED_FACEBOOK_PAGE_PERMISSIONS.join(","),
+  });
+
+  return new Response(
+    JSON.stringify({
+      loginUrl: `https://www.facebook.com/${env.META_GRAPH_VERSION || "v24.0"}/dialog/oauth?${params.toString()}`,
+      profileKey,
+      pageId: pageId || null,
+      requiredPermissions: REQUIRED_FACEBOOK_PAGE_PERMISSIONS,
+    }),
+    { headers: JSON_HEADERS }
+  );
+}
+
+async function handleFacebookOAuthCallback(request, env) {
+  const url = new URL(request.url);
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const error = url.searchParams.get("error") || url.searchParams.get("error_message");
+
+  const redirectWithStatus = (returnUrl, params) => {
+    const target = returnUrl ? new URL(returnUrl) : new URL("/", url.origin);
+    for (const [key, value] of Object.entries(params)) {
+      target.searchParams.set(key, value);
+    }
+    return Response.redirect(target.toString(), 302);
+  };
+
+  if (!state) {
+    return new Response("Missing OAuth state", { status: 400, headers: CORS_HEADERS });
+  }
+
+  const stateRow = await env.DB.prepare("SELECT * FROM facebook_oauth_states WHERE state = ?")
+    .bind(state)
+    .first();
+
+  if (!stateRow || stateRow.expires_at < nowUnix()) {
+    return new Response("Facebook OAuth state expired. Start reconnect again.", {
+      status: 400,
+      headers: CORS_HEADERS,
+    });
+  }
+
+  await env.DB.prepare("DELETE FROM facebook_oauth_states WHERE state = ?").bind(state).run();
+
+  if (error || !code) {
+    return redirectWithStatus(stateRow.return_url, {
+      fb_oauth: "error",
+      profile: stateRow.profile_key,
+      reason: error || "missing_code",
+    });
+  }
+
+  try {
+    const redirectUri = getOAuthRedirectUri(request, env);
+    const shortTokenData = await graphJson(
+      `${env.META_GRAPH_BASE || "https://graph.facebook.com"}/${env.META_GRAPH_VERSION || "v24.0"}/oauth/access_token`,
+      {
+        client_id: env.META_APP_ID,
+        client_secret: env.META_APP_SECRET,
+        redirect_uri: redirectUri,
+        code,
+      }
+    );
+
+    const longTokenData = await graphJson(
+      `${env.META_GRAPH_BASE || "https://graph.facebook.com"}/${env.META_GRAPH_VERSION || "v24.0"}/oauth/access_token`,
+      {
+        grant_type: "fb_exchange_token",
+        client_id: env.META_APP_ID,
+        client_secret: env.META_APP_SECRET,
+        fb_exchange_token: shortTokenData.access_token,
+      }
+    );
+
+    await saveFacebookConnectionFromUserToken(env, {
+      profileKey: stateRow.profile_key,
+      requestedPageId: stateRow.page_id,
+      userAccessToken: longTokenData.access_token,
+      userTokenExpiresAt: longTokenData.expires_in ? nowUnix() + Number(longTokenData.expires_in) : null,
+    });
+
+    return redirectWithStatus(stateRow.return_url, {
+      fb_oauth: "connected",
+      profile: stateRow.profile_key,
+    });
+  } catch (err) {
+    console.error("Facebook OAuth callback failed:", err);
+    return redirectWithStatus(stateRow.return_url, {
+      fb_oauth: "error",
+      profile: stateRow.profile_key,
+      reason: String(err?.message || err).slice(0, 160),
+    });
+  }
+}
+
+async function graphJson(urlOrString, params = {}, init = {}) {
+  const url = new URL(urlOrString);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, value);
+    }
+  }
+
+  const res = await fetch(url.toString(), init);
+  const text = await res.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    data = { raw: text };
+  }
+
+  if (!res.ok || data.error) {
+    const classified = classifyMetaError(data);
+    const err = new Error(classified.message || text || `Graph API failed (${res.status})`);
+    err.meta = data;
+    err.classification = classified;
+    throw err;
+  }
+
+  return data;
+}
+
+async function saveFacebookConnectionFromUserToken(env, { profileKey, requestedPageId, userAccessToken, userTokenExpiresAt }) {
+  const now = nowUnix();
+  const user = await graphJson(graphUrl(env, "/me"), {
+    fields: "id,name",
+    access_token: userAccessToken,
+  });
+  const permissionData = await graphJson(graphUrl(env, "/me/permissions"), {
+    access_token: userAccessToken,
+  });
+  const grantedPermissions = (permissionData.data || [])
+    .filter((perm) => perm.status === "granted")
+    .map((perm) => perm.permission);
+  const missingPermissions = REQUIRED_FACEBOOK_PAGE_PERMISSIONS.filter((perm) => !grantedPermissions.includes(perm));
+
+  if (missingPermissions.length) {
+    throw new Error(`Missing Facebook permission: ${missingPermissions.join(", ")}`);
+  }
+
+  const accounts = await graphJson(graphUrl(env, "/me/accounts"), {
+    fields: "id,name,access_token,tasks,perms",
+    access_token: userAccessToken,
+  });
+  const pages = accounts.data || [];
+  const selectedPage = requestedPageId
+    ? pages.find((page) => String(page.id) === String(requestedPageId))
+    : pages[0];
+
+  if (!selectedPage) {
+    throw new Error(
+      requestedPageId
+        ? "User no longer has admin access to the selected Facebook Page."
+        : "No Facebook Pages were returned for this user."
+    );
+  }
+
+  if (!selectedPage.access_token) {
+    throw new Error("Selected Facebook Page did not return a Page access token.");
+  }
+
+  const pageTest = await testFacebookPageToken(env, selectedPage.id, selectedPage.access_token);
+  if (!pageTest.ok) {
+    throw new Error(pageTest.error || "New Facebook Page token failed validation.");
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO facebook_connections (
+      profile_key, page_id, page_name, page_access_token, page_token_expires_at,
+      user_id, user_name, user_access_token, user_token_expires_at,
+      granted_permissions, missing_permissions, token_status, reconnect_required,
+      last_checked_at, last_error, debug_payload, created_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(profile_key) DO UPDATE SET
+      page_id = excluded.page_id,
+      page_name = excluded.page_name,
+      page_access_token = excluded.page_access_token,
+      page_token_expires_at = excluded.page_token_expires_at,
+      user_id = excluded.user_id,
+      user_name = excluded.user_name,
+      user_access_token = excluded.user_access_token,
+      user_token_expires_at = excluded.user_token_expires_at,
+      granted_permissions = excluded.granted_permissions,
+      missing_permissions = excluded.missing_permissions,
+      token_status = excluded.token_status,
+      reconnect_required = excluded.reconnect_required,
+      last_checked_at = excluded.last_checked_at,
+      last_error = excluded.last_error,
+      alert_sent_at = NULL,
+      debug_payload = excluded.debug_payload,
+      updated_at = excluded.updated_at`
+  )
+    .bind(
+      profileKey,
+      selectedPage.id,
+      selectedPage.name || null,
+      selectedPage.access_token,
+      pageTest.expiresAt,
+      user.id || null,
+      user.name || null,
+      userAccessToken,
+      userTokenExpiresAt,
+      JSON.stringify(grantedPermissions),
+      JSON.stringify(missingPermissions),
+      pageTest.status,
+      0,
+      now,
+      null,
+      JSON.stringify(pageTest.debug || {}),
+      now,
+      now
+    )
+    .run();
+}
+
+async function testFacebookPageToken(env, pageId, pageToken) {
+  try {
+    const page = await graphJson(graphUrl(env, `/${pageId}`), {
+      fields: "id,name",
+      access_token: pageToken,
+    });
+    const debug = await debugMetaToken(env, pageToken);
+    return {
+      ok: true,
+      page,
+      debug,
+      status: tokenStatusFromDebug(debug),
+      expiresAt: debug?.data?.expires_at || null,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err?.classification?.message || err?.message || String(err),
+      debug: err?.meta || null,
+    };
+  }
+}
+
+async function debugMetaToken(env, inputToken) {
+  const appAccessToken = getAppAccessToken(env);
+  if (!appAccessToken) {
+    throw new Error("META_APP_ID and META_APP_SECRET are required for token debug.");
+  }
+  return graphJson(graphUrl(env, "/debug_token"), {
+    input_token: inputToken,
+    access_token: appAccessToken,
+  });
+}
+
+function tokenStatusFromDebug(debug) {
+  const data = debug?.data || {};
+  if (!data.is_valid) return "invalid";
+  if (!data.expires_at || data.expires_at === 0) return "valid";
+  const secondsRemaining = data.expires_at - nowUnix();
+  if (secondsRemaining <= 0) return "expired";
+  if (secondsRemaining <= 14 * 24 * 60 * 60) return "expiring";
+  return "valid";
+}
+
+function classifyMetaError(payload) {
+  const error = payload?.error || payload || {};
+  const code = Number(error.code || 0);
+  const subcode = Number(error.error_subcode || error.subcode || 0);
+  const message = String(error.message || error.error_user_msg || "Meta Graph API error");
+  const lower = message.toLowerCase();
+
+  if (code === 190 && (subcode === 463 || lower.includes("expired"))) {
+    return { type: "expired_token", reconnectRequired: true, message: "Facebook token expired. Reconnect Facebook." };
+  }
+  if (code === 190 && (subcode === 458 || lower.includes("not authorized") || lower.includes("has not authorized"))) {
+    return { type: "user_removed_app", reconnectRequired: true, message: "The connected Facebook user removed or deauthorized the app." };
+  }
+  if (code === 190) {
+    return { type: "invalid_token", reconnectRequired: true, message: "Facebook token is invalid. Reconnect Facebook." };
+  }
+  if ((code === 10 || code === 200) && lower.includes("pages_manage_posts")) {
+    return { type: "missing_pages_manage_posts", reconnectRequired: true, message: "Missing pages_manage_posts permission." };
+  }
+  if ((code === 10 || code === 200) && (lower.includes("permission") || lower.includes("permissions"))) {
+    return { type: "missing_permission", reconnectRequired: true, message };
+  }
+  if (lower.includes("business manager") || lower.includes("business") || lower.includes("asset")) {
+    return { type: "page_disconnected_business_manager", reconnectRequired: true, message: "Facebook Page may be disconnected from Business Manager." };
+  }
+  if (lower.includes("admin") || lower.includes("task") || lower.includes("page access")) {
+    return { type: "lost_page_admin_access", reconnectRequired: true, message: "Connected user lost Facebook Page admin access." };
+  }
+  return { type: "meta_error", reconnectRequired: false, message };
+}
+
+async function markConnectionError(env, connection, classification, rawError) {
+  if (!connection?.profile_key) return;
+  const now = nowUnix();
+  await env.DB.prepare(
+    `UPDATE facebook_connections
+     SET token_status = ?, reconnect_required = ?, last_checked_at = ?, last_error = ?, updated_at = ?
+     WHERE profile_key = ?`
+  )
+    .bind(
+      classification.type || "error",
+      classification.reconnectRequired ? 1 : 0,
+      now,
+      classification.message || String(rawError || ""),
+      now,
+      connection.profile_key
+    )
+    .run();
+
+  if (classification.reconnectRequired) {
+    await sendTokenAlert(env, connection, classification.message || "Facebook reconnect required.");
+  }
+}
+
+async function refreshFacebookConnection(env, connection) {
+  if (!connection?.user_access_token) {
+    return { ok: false, error: "No stored user token to refresh Page token from." };
+  }
+
+  try {
+    const refreshedUser = await graphJson(graphUrl(env, "/oauth/access_token"), {
+      grant_type: "fb_exchange_token",
+      client_id: env.META_APP_ID,
+      client_secret: env.META_APP_SECRET,
+      fb_exchange_token: connection.user_access_token,
+    });
+
+    await saveFacebookConnectionFromUserToken(env, {
+      profileKey: connection.profile_key,
+      requestedPageId: connection.page_id,
+      userAccessToken: refreshedUser.access_token || connection.user_access_token,
+      userTokenExpiresAt: refreshedUser.expires_in ? nowUnix() + Number(refreshedUser.expires_in) : connection.user_token_expires_at,
+    });
+    return { ok: true };
+  } catch (err) {
+    const classification = err.classification || classifyMetaError(err.meta || { message: err.message });
+    await markConnectionError(env, connection, classification, err);
+    return { ok: false, error: classification.message || err.message };
+  }
+}
+
+async function runDueTokenHealthChecks(env, options = {}) {
+  const now = nowUnix();
+  const force = !!options.force;
+  const state = await env.DB.prepare("SELECT * FROM meta_maintenance WHERE key = ?").bind("facebook_token_health").first();
+  const lastRun = state?.value ? Number(state.value) : 0;
+
+  if (!force && lastRun && now - lastRun < 23 * 60 * 60) {
+    return { ok: true, skipped: true, lastRun };
+  }
+
+  const { results } = await env.DB.prepare("SELECT * FROM facebook_connections ORDER BY profile_key ASC").all();
+  const checks = [];
+
+  for (const connection of results || []) {
+    const check = await checkFacebookConnection(env, connection);
+    checks.push({ profileKey: connection.profile_key, ...check });
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO meta_maintenance (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  )
+    .bind("facebook_token_health", String(now), now)
+    .run();
+
+  return { ok: true, checked: checks.length, checks };
+}
+
+async function checkFacebookConnection(env, connection) {
+  const now = nowUnix();
+  try {
+    const debug = await debugMetaToken(env, connection.page_access_token);
+    let status = tokenStatusFromDebug(debug);
+    let reconnectRequired = status === "invalid" || status === "expired";
+    let lastError = reconnectRequired ? "Facebook Page token is invalid or expired." : null;
+
+    const grantedScopes = debug?.data?.scopes || [];
+    const storedGranted = parseJsonArray(connection.granted_permissions);
+    const grantedPermissions = Array.from(new Set([...storedGranted, ...grantedScopes]));
+    const missingPermissions = REQUIRED_FACEBOOK_PAGE_PERMISSIONS.filter((perm) => !grantedPermissions.includes(perm));
+
+    if (missingPermissions.includes("pages_manage_posts")) {
+      status = "missing_permission";
+      reconnectRequired = true;
+      lastError = "Missing pages_manage_posts permission.";
+    }
+
+    if (status === "expiring" || reconnectRequired) {
+      const refresh = await refreshFacebookConnection(env, connection);
+      if (refresh.ok) return { ok: true, status: "refreshed" };
+      lastError = refresh.error || lastError;
+    }
+
+    await env.DB.prepare(
+      `UPDATE facebook_connections
+       SET token_status = ?, reconnect_required = ?, last_checked_at = ?, last_error = ?, debug_payload = ?,
+           granted_permissions = ?, missing_permissions = ?, updated_at = ?
+       WHERE profile_key = ?`
+    )
+      .bind(
+        status,
+        reconnectRequired ? 1 : 0,
+        now,
+        lastError,
+        JSON.stringify(debug),
+        JSON.stringify(grantedPermissions),
+        JSON.stringify(missingPermissions),
+        now,
+        connection.profile_key
+      )
+      .run();
+
+    if (reconnectRequired || status === "expiring") {
+      await sendTokenAlert(env, connection, lastError || "Facebook Page token needs attention.");
+    }
+
+    return { ok: !reconnectRequired, status, missingPermissions };
+  } catch (err) {
+    const classification = err.classification || classifyMetaError(err.meta || { message: err.message });
+    await markConnectionError(env, connection, classification, err);
+    return { ok: false, status: classification.type, error: classification.message };
+  }
+}
+
+async function sendTokenAlert(env, connection, message) {
+  const now = nowUnix();
+  if (connection.alert_sent_at && now - connection.alert_sent_at < 24 * 60 * 60) return;
+
+  const payload = {
+    type: "facebook_token_alert",
+    profileKey: connection.profile_key,
+    pageId: connection.page_id,
+    pageName: connection.page_name,
+    message,
+    reconnectRequired: true,
+    time: new Date(now * 1000).toISOString(),
+  };
+
+  if (env.TOKEN_ALERT_WEBHOOK_URL) {
+    try {
+      await fetch(env.TOKEN_ALERT_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      console.warn("Token alert webhook failed:", err);
+    }
+  } else {
+    console.warn("TOKEN ALERT:", JSON.stringify(payload));
+  }
+
+  await env.DB.prepare("UPDATE facebook_connections SET alert_sent_at = ?, updated_at = ? WHERE profile_key = ?")
+    .bind(now, now, connection.profile_key)
+    .run();
 }
 
 async function publishToFacebook(post, env, profileConfig) {
@@ -1173,6 +1830,19 @@ async function publishToFacebook(post, env, profileConfig) {
   if (!pageId || !token) {
     console.warn("META_PAGE_ID or META_PAGE_ACCESS_TOKEN missing for this profile, skipping FB publish");
     return { ok: false, error: "fb_config_missing" };
+  }
+
+  if (profileConfig.fbConnection?.reconnect_required) {
+    await sendTokenAlert(
+      env,
+      profileConfig.fbConnection,
+      profileConfig.fbConnection.last_error || "Reconnect Facebook before publishing fails."
+    );
+    return {
+      ok: false,
+      error: "fb_reconnect_required",
+      detail: profileConfig.fbConnection.last_error || "Reconnect Facebook",
+    };
   }
 
   const message = [post.caption || "", post.hashtags || ""]
@@ -1196,7 +1866,17 @@ async function publishToFacebook(post, env, profileConfig) {
   const text = await res.text();
   if (!res.ok) {
     console.error("Facebook publish error:", res.status, text);
-    return { ok: false, error: "fb_error", detail: text };
+    let payload = null;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { message: text };
+    }
+    const classification = classifyMetaError(payload);
+    if (profileConfig.fbConnection) {
+      await markConnectionError(env, profileConfig.fbConnection, classification, payload);
+    }
+    return { ok: false, error: classification.type || "fb_error", detail: classification.message || text };
   }
 
   console.log("Facebook publish OK:", text);
