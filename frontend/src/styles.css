@@ -1059,6 +1059,7 @@ button.secondary:hover {
 }
 
 .saved-thumb {
+  position: relative;
   border: 1px solid var(--border-subtle);
   border-radius: 10px;
   background: #ffffff;
@@ -1079,6 +1080,23 @@ button.secondary:hover {
   object-fit: cover;
   border-radius: 8px;
   background: #f1f5f9;
+}
+
+.saved-thumb-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.78);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  line-height: 1;
+  pointer-events: none;
 }
 
 .saved-image-preview-card {
@@ -1111,6 +1129,23 @@ button.secondary:hover {
 .compact-meta p {
   -webkit-line-clamp: 3;
   max-width: 220px;
+}
+
+.library-selection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.library-selection-actions > span {
+  color: var(--text-muted);
+  font-size: 0.8rem;
 }
 
 .image-library-header {

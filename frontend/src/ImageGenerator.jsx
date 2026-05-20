@@ -153,7 +153,7 @@ export default function ImageGenerator({
   const [selectedFolder, setSelectedFolder] = useState("All");
   const [newFolderName, setNewFolderName] = useState("");
   const [libraryItems, setLibraryItems] = useState([]);
-  const [selectedImageKey, setSelectedImageKey] = useState("");
+  const [selectedImageKeys, setSelectedImageKeys] = useState([]);
   const [loading, setLoading] = useState(false);
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -166,10 +166,10 @@ export default function ImageGenerator({
       ? libraryItems
       : libraryItems.filter((item) => item.folder === selectedFolder);
 
-  const selectedSavedImage =
-    visibleItems.find((image) => image.key === selectedImageKey) ||
-    visibleItems[0] ||
-    null;
+  const selectedImages = visibleItems.filter((image) =>
+    selectedImageKeys.includes(image.key),
+  );
+  const focusedImage = selectedImages[0] || visibleItems[0] || null;
 
   function getHeaders(extra = {}) {
     return typeof makeHeaders === "function" ? makeHeaders(extra) : extra;
@@ -232,11 +232,14 @@ export default function ImageGenerator({
 
       setFolders(nextFolders);
       setLibraryItems(mergedItems);
-      setSelectedImageKey((currentKey) => {
-        if (mergedItems.some((image) => image.key === currentKey)) {
-          return currentKey;
+      setSelectedImageKeys((currentKeys) => {
+        const nextKeys = currentKeys.filter((key) =>
+          mergedItems.some((image) => image.key === key),
+        );
+        if (nextKeys.length) {
+          return nextKeys;
         }
-        return mergedItems[0]?.key || "";
+        return mergedItems[0]?.key ? [mergedItems[0].key] : [];
       });
     } catch (e) {
       console.error("Image library error", e);
@@ -299,7 +302,12 @@ export default function ImageGenerator({
           previousMap.set(item.key, item);
         }
         const merged = Array.from(previousMap.values());
-        setSelectedImageKey(merged[0]?.key || "");
+        setSelectedImageKeys((currentKeys) => {
+          const nextKeys = Array.from(
+            new Set([...currentKeys, ...nextItems.map((item) => item.key)]),
+          );
+          return nextKeys.length ? nextKeys : merged[0]?.key ? [merged[0].key] : [];
+        });
         setFolders((prev) =>
           Array.from(new Set([...prev, selectedFolderForNewImages])),
         );
@@ -370,6 +378,31 @@ export default function ImageGenerator({
     );
   }
 
+  function toggleImageSelection(imageKey) {
+    if (!imageKey) return;
+    setSelectedImageKeys((currentKeys) => {
+      if (currentKeys.includes(imageKey)) {
+        return currentKeys.filter((key) => key !== imageKey);
+      }
+      return [...currentKeys, imageKey];
+    });
+  }
+
+  function handleSelectAllVisible() {
+    setSelectedImageKeys(visibleItems.map((item) => item.key));
+  }
+
+  function handleClearSelection() {
+    setSelectedImageKeys([]);
+  }
+
+  function handleUseSelectedAsDraft() {
+    const itemsToUse = selectedImages.length ? selectedImages : focusedImage ? [focusedImage] : [];
+    itemsToUse.forEach((image) => {
+      onImageGenerated?.(image.url, image.prompt || "", image);
+    });
+  }
+
   async function handleUploadFiles(event) {
     const files = Array.from(event.target.files || []);
     event.target.value = "";
@@ -412,7 +445,11 @@ export default function ImageGenerator({
 
       setFolders((prev) => Array.from(new Set([...prev, targetFolder])));
       setLibraryItems((prev) => [...uploadedItems, ...prev]);
-      setSelectedImageKey(uploadedItems[0]?.key || selectedImageKey);
+      setSelectedImageKeys((currentKeys) =>
+        Array.from(
+          new Set([...uploadedItems.map((item) => item.key), ...currentKeys]),
+        ),
+      );
     } catch (e) {
       console.error("Upload image error", e);
       setError(e.message || "Upload failed");
@@ -439,11 +476,12 @@ export default function ImageGenerator({
       }
       setLibraryItems((prev) => {
         const filtered = prev.filter((item) => item.key !== image.key);
-        setSelectedImageKey((currentKey) => {
-          if (currentKey !== image.key) {
-            return currentKey;
+        setSelectedImageKeys((currentKeys) => {
+          const nextKeys = currentKeys.filter((key) => key !== image.key);
+          if (nextKeys.length) {
+            return nextKeys;
           }
-          return filtered[0]?.key || "";
+          return filtered[0]?.key ? [filtered[0].key] : [];
         });
         return filtered;
       });
@@ -589,16 +627,18 @@ export default function ImageGenerator({
           <div className="saved-image-browser">
             <div className="saved-image-grid">
               {visibleItems.map((image) => {
-                const isSelected =
-                  (selectedSavedImage?.key || "") === (image.key || "");
+                const isSelected = selectedImageKeys.includes(image.key);
                 return (
                   <button
                     key={image.key || image.url}
                     type="button"
                     className={`saved-thumb ${isSelected ? "is-selected" : ""}`}
-                    onClick={() => setSelectedImageKey(image.key || "")}
+                    onClick={() => toggleImageSelection(image.key)}
                     title={image.prompt || "Generated image"}
                   >
+                    <span className="saved-thumb-check" aria-hidden="true">
+                      {isSelected ? "✓" : ""}
+                    </span>
                     <img
                       src={image.url}
                       alt={image.prompt || "Generated image"}
@@ -609,14 +649,36 @@ export default function ImageGenerator({
               })}
             </div>
 
-            {selectedSavedImage ? (
+            <div className="library-selection-actions">
+              <span>
+                {selectedImages.length ? `${selectedImages.length} selected` : "Click thumbnails to select"}
+              </span>
+              <div className="button-row">
+                <button type="button" className="secondary" onClick={handleSelectAllVisible}>
+                  Select all in folder
+                </button>
+                <button type="button" className="secondary" onClick={handleClearSelection}>
+                  Clear selection
+                </button>
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={handleUseSelectedAsDraft}
+                  disabled={!selectedImages.length && !focusedImage}
+                >
+                  Use selected as draft
+                </button>
+              </div>
+            </div>
+
+            {focusedImage ? (
               <div className="saved-image-preview-card">
                 <button
                   type="button"
                   className="saved-image-preview-button"
                   onClick={() =>
                     window.open(
-                      selectedSavedImage.url,
+                      focusedImage.url,
                       "_blank",
                       "noopener,noreferrer",
                     )
@@ -624,28 +686,23 @@ export default function ImageGenerator({
                   aria-label="Open saved image preview"
                 >
                   <img
-                    src={selectedSavedImage.url}
-                    alt={selectedSavedImage.prompt || "Generated image"}
+                    src={focusedImage.url}
+                    alt={focusedImage.prompt || "Generated image"}
                     loading="lazy"
                   />
                 </button>
                 <div className="image-library-meta compact-meta">
-                  <p title={selectedSavedImage.prompt}>
-                    {selectedSavedImage.prompt || "Generated image"}
+                  <p title={focusedImage.prompt}>
+                    {focusedImage.prompt || "Generated image"}
                   </p>
-                  <span>
-                    {selectedSavedImage.folder || DEFAULT_LIBRARY_FOLDER}
-                  </span>
+                  <span>{focusedImage.folder || DEFAULT_LIBRARY_FOLDER}</span>
                 </div>
                 <label className="field compact-field">
                   <span>Move to folder</span>
                   <select
-                    value={selectedSavedImage.folder || DEFAULT_LIBRARY_FOLDER}
+                    value={focusedImage.folder || DEFAULT_LIBRARY_FOLDER}
                     onChange={(e) =>
-                      handleMoveImageToFolder(
-                        selectedSavedImage.key,
-                        e.target.value,
-                      )
+                      handleMoveImageToFolder(focusedImage.key, e.target.value)
                     }
                   >
                     {folders.map((folder) => (
@@ -661,21 +718,21 @@ export default function ImageGenerator({
                     className="secondary"
                     onClick={() =>
                       onImageGenerated?.(
-                        selectedSavedImage.url,
-                        selectedSavedImage.prompt || "",
-                        selectedSavedImage,
+                        focusedImage.url,
+                        focusedImage.prompt || "",
+                        focusedImage,
                       )
                     }
                   >
-                    Use as draft
+                    Use this as draft
                   </button>
                   <button
                     type="button"
                     className="danger"
-                    onClick={() => handleDelete(selectedSavedImage)}
-                    disabled={deletingKey === selectedSavedImage.key}
+                    onClick={() => handleDelete(focusedImage)}
+                    disabled={deletingKey === focusedImage.key}
                   >
-                    {deletingKey === selectedSavedImage.key
+                    {deletingKey === focusedImage.key
                       ? "Deleting..."
                       : "Delete"}
                   </button>
