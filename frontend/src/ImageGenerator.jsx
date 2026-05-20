@@ -4,96 +4,75 @@ import React, { useState } from "react";
 const ENV_API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 const CUSTOM_PROMPT_VALUE = "custom";
 
+const TEMPLATE_VALUES = {
+  cities: ["Mississauga", "Oakville", "Burlington", "Grimsby", "Hamilton"],
+  neighbourhoods: ["City Centre", "Applewood", "Port Credit", "Bronte", "Glen Abbey", "Aldershot", "Millcroft", "Downtown", "Lakefront", "Meadowlands"],
+  phones: ["(905) 555-0123", "(416) 555-0456", "(647) 555-0789"],
+};
+
+function randomItem(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function fillTemplates(text) {
+  return text
+    .replace(/\[CITY\]/g, randomItem(TEMPLATE_VALUES.cities))
+    .replace(/\[NEIGHBOURHOOD\]/g, randomItem(TEMPLATE_VALUES.neighbourhoods))
+    .replace(/\[PHONE_NUMBER\]/g, randomItem(TEMPLATE_VALUES.phones));
+}
+
 const PROMPT_OPTIONS = [
   {
     value: "mississauga-city-centre",
     label: "Mississauga - City Centre",
-    prompt:
+    variations: [
       'Realistic professional image for popcorn ceiling removal service in Mississauga City Centre. Bright modern condo living room near Square One style area, old popcorn ceiling being transformed into smooth flat white ceiling, clean floor protection, professional dustless sanding machine, trustworthy contractor look, eye-catching local home renovation advertising image. Add subtle readable text: "Popcorn Ceiling Removal Mississauga".',
+      'High-quality before-and-after image showcasing popcorn ceiling removal in Mississauga City Centre. Modern urban condo interior with contractor using dustless sanding equipment, visible texture transformation from outdated to smooth ceiling, professional appearance, clean workspace protection, premium service advertising. Include text overlay: "Transform Your Ceiling Mississauga".',
+      'Professional renovation marketing image for Mississauga City Centre popcorn ceiling removal. Show modern home interior, protected floors, sanding machinery with vacuum system, smooth white ceiling result, bright lighting emphasizing the transformation, trustworthy contractor aesthetic.',
+    ],
   },
   {
     value: "mississauga-applewood",
     label: "Mississauga - Applewood",
-    prompt:
+    variations: [
       'High-quality realistic renovation image for popcorn ceiling removal in Applewood Mississauga. Show a clean protected room with contractor using dustless ceiling sander, outdated popcorn texture partly removed, smooth ceiling visible, bright natural light, neat professional workspace, premium local contractor service. Add subtle text area: "Smooth Ceilings in Applewood".',
+      'Eye-catching popcorn removal image for Applewood Mississauga showcasing modern home transformation. Before-and-after visual with half old textured ceiling transitioning to smooth white finish, professional equipment, clean floor protection, bright ambiance, local contractor branding.',
+      'Premium renovation photograph for Applewood ceiling services. Beautiful home interior, contractor with professional dustless sanding system, smooth ceiling transformation clearly visible, protected furniture and floors, fresh modern aesthetic, trustworthy local service presentation.',
+    ],
   },
   {
     value: "mississauga-port-credit",
     label: "Mississauga - Port Credit",
-    prompt:
+    variations: [
       'Eye-catching home improvement image for popcorn ceiling removal in Port Credit Mississauga. Modern home interior with lake-area bright natural light, before-and-after ceiling transformation, left side old popcorn ceiling, right side smooth white ceiling, clean professional finish, premium contractor advertising style. Add text: "Popcorn Ceiling Removal Port Credit".',
+      'Upscale home renovation image for Port Credit ceiling services. Show lakeside home interior with modern design, contractor using professional dustless equipment, visible texture removal process, smooth ceiling result, bright natural light from windows, premium local service aesthetic.',
+      'Professional marketing image showcasing Port Credit home transformation. Split-screen before-and-after effect with textured ceiling converting to smooth modern finish, luxury home style, clean workspace, professional contractor appearance.',
+    ],
   },
   {
-    value: "oakville-bronte",
-    label: "Oakville - Bronte",
-    prompt:
-      'Realistic premium renovation image for popcorn ceiling removal in Bronte Oakville. Beautiful living room with protected floors, professional contractor sanding ceiling with vacuum system, clean smooth ceiling finish, upscale home style, bright windows, luxury local service look. Add subtle readable text: "Popcorn Ceiling Removal Oakville".',
-  },
-  {
-    value: "oakville-glen-abbey",
-    label: "Oakville - Glen Abbey",
-    prompt:
-      'Professional marketing image for smooth ceiling refinishing in Glen Abbey Oakville. Show outdated popcorn ceiling changing into a smooth modern ceiling, clean room protection, drywall tools, premium home renovation feel, bright realistic photography, trustworthy contractor service. Add text: "Smooth Ceilings Glen Abbey".',
-  },
-  {
-    value: "burlington-aldershot",
-    label: "Burlington - Aldershot",
-    prompt:
-      'Realistic contractor service image for popcorn ceiling removal in Aldershot Burlington. Clean home interior, floor protection installed, professional dustless sanding machine on ceiling, smooth white ceiling transformation, no mess, bright natural light, eye-catching renovation advertising image. Add text: "Popcorn Ceiling Removal Burlington".',
-  },
-  {
-    value: "burlington-millcroft",
-    label: "Burlington - Millcroft",
-    prompt:
-      'High-end realistic image for popcorn ceiling removal in Millcroft Burlington. Modern family home living room, old textured ceiling partly removed, smooth ceiling finish shown, professional worker with sanding equipment, clean and organized workspace, premium local contractor advertising. Add subtle text: "Smooth Ceiling Experts Millcroft".',
-  },
-  {
-    value: "grimsby-lakefront",
-    label: "Grimsby - Lakefront",
-    prompt:
-      'Professional local SEO image for popcorn ceiling removal in Grimsby lakefront area. Bright home interior with outdated popcorn ceiling being removed, smooth white ceiling result, clean floor covering, dustless sanding equipment, fresh modern renovation look, trustworthy contractor ad style. Add text: "Popcorn Ceiling Removal Grimsby".',
-  },
-  {
-    value: "grimsby-downtown",
-    label: "Grimsby - Downtown",
-    prompt:
-      'Eye-catching before-and-after image for popcorn ceiling removal in Downtown Grimsby. Left side shows old popcorn texture, right side shows smooth flat ceiling, clean modern home, professional renovation setup, bright lighting, premium local service feel. Add readable text: "Smooth Ceilings Downtown Grimsby".',
-  },
-  {
-    value: "ancaster-meadowlands",
-    label: "Ancaster - Meadowlands",
-    prompt:
-      'Realistic premium renovation image for popcorn ceiling removal in Meadowlands Ancaster. Upscale home interior, contractor using dustless ceiling sander, protected floors and clean walls, smooth white ceiling transformation, bright natural light, professional trustworthy service image. Add text: "Popcorn Ceiling Removal Ancaster".',
-  },
-  {
-    value: "ancaster-old-ancaster",
-    label: "Ancaster - Old Ancaster",
-    prompt:
-      'Beautiful realistic home renovation image for popcorn ceiling removal in Old Ancaster. Classic home interior with popcorn ceiling being transformed into smooth ceiling, clean professional setup, ladder, sanding machine with vacuum hose, bright elegant finish, premium contractor advertising style. Add subtle text: "Smooth Ceilings Old Ancaster".',
-  },
-  {
-    value: "random-city-auto",
-    label: "Random City Auto Prompt",
-    prompt:
+    value: "random-template",
+    label: "Random Auto Template",
+    variations: [
       'Create a realistic professional popcorn ceiling removal service image for [CITY] in [NEIGHBOURHOOD]. Show a clean protected room, outdated popcorn ceiling being removed, smooth white ceiling transformation, professional dustless sanding machine, bright natural light, premium contractor service look, no messy dust, eye-catching local advertising image. Add subtle readable text: "Popcorn Ceiling Removal [CITY]".',
+      'High-quality home renovation image for popcorn ceiling removal in [NEIGHBOURHOOD], [CITY]. Display contractor using modern dustless sanding equipment, before-and-after ceiling texture transformation, protected floors and furniture, bright professional workspace, premium local service presentation.',
+      'Professional marketing photograph for [CITY] ceiling refinishing services in [NEIGHBOURHOOD]. Show modern home interior transformation from textured to smooth ceiling, clean equipment setup, bright natural lighting, trustworthy contractor aesthetic.',
+    ],
   },
   {
-    value: "with-phone-number",
-    label: "With Phone Number Version",
-    prompt:
-      'Create a realistic local contractor advertisement for popcorn ceiling removal in [CITY], [NEIGHBOURHOOD]. Show a professional worker using a dustless ceiling sander in a clean protected room, old popcorn texture transforming into smooth flat white ceiling, bright modern home interior, premium trustworthy service look. Add bold readable text: "Popcorn Ceiling Removal" and "Call [PHONE NUMBER]".',
+    value: "with-phone",
+    label: "With Contact Number",
+    variations: [
+      'Create a realistic local contractor advertisement for popcorn ceiling removal in [CITY], [NEIGHBOURHOOD]. Show a professional worker using a dustless ceiling sander in a clean protected room, old popcorn texture transforming into smooth flat white ceiling, bright modern home interior, premium trustworthy service look. Add bold readable text: "Popcorn Ceiling Removal" and "Call [PHONE_NUMBER]".',
+      'Professional contractor marketing image for [CITY] ceiling services. Display [NEIGHBOURHOOD] home with popcorn removal in progress, dustless sanding equipment, smooth ceiling transformation visible, protected workspace, trustworthy professional appearance. Include prominent text: "[PHONE_NUMBER]" for local service contact.',
+    ],
   },
   {
-    value: "no-phone-number",
-    label: "No Phone Number Version",
-    prompt:
+    value: "clean-minimal",
+    label: "Clean Minimal Design",
+    variations: [
       'Create a clean realistic marketing image for popcorn ceiling removal service in [CITY], [NEIGHBOURHOOD]. Show smooth ceiling transformation, protected floors, professional tools, bright home interior, fresh modern finish, premium local contractor feel, no phone number, no logo, no clutter. Add subtle text only: "Smooth Ceilings in [CITY]".',
-  },
-  {
-    value: "random-local-seo",
-    label: "Random Local SEO Prompt",
-    prompt:
-      "Generate a realistic popcorn ceiling removal image targeting one random local service area from this list: Mississauga City Centre, Applewood Mississauga, Port Credit Mississauga, Bronte Oakville, Glen Abbey Oakville, Aldershot Burlington, Millcroft Burlington, Downtown Grimsby, Grimsby Lakefront, Meadowlands Ancaster, Old Ancaster. Show a clean professional ceiling transformation with dustless sanding equipment, protected floors, smooth ceiling finish, bright home interior, premium contractor advertising style. Add readable local text with the selected city/neighbourhood.",
+      'Minimalist professional renovation photograph for [NEIGHBOURHOOD], [CITY]. Modern home with smooth ceiling finish, bright workspace, professional dustless equipment, clean aesthetic, premium contractor service appearance. Subtle branding only.',
+    ],
   },
 ];
 
@@ -109,7 +88,7 @@ export default function ImageGenerator({
   buildApiUrl,
 }) {
   const [selectedPrompt, setSelectedPrompt] = useState(CUSTOM_PROMPT_VALUE);
-  const [prompt, setPrompt] = useState(PROMPT_OPTIONS[0].prompt);
+  const [prompt, setPrompt] = useState("");
   const [count, setCount] = useState("3");
   const [savedImages, setSavedImages] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -192,13 +171,27 @@ export default function ImageGenerator({
     }
 
     const option = PROMPT_OPTIONS.find((item) => item.value === value);
-    setPrompt(option?.prompt || "");
+    if (option && option.variations) {
+      const randomVariation = randomItem(option.variations);
+      const filledPrompt = fillTemplates(randomVariation);
+      setPrompt(filledPrompt);
+    }
+  }
+
+  function handleGenerateVariation() {
+    if (selectedPrompt === CUSTOM_PROMPT_VALUE) return;
+
+    const option = PROMPT_OPTIONS.find((item) => item.value === selectedPrompt);
+    if (option && option.variations) {
+      const randomVariation = randomItem(option.variations);
+      const filledPrompt = fillTemplates(randomVariation);
+      setPrompt(filledPrompt);
+    }
   }
 
   function handlePromptTextChange(value) {
     setPrompt(value);
-    const matchedOption = PROMPT_OPTIONS.find((item) => item.prompt === value);
-    setSelectedPrompt(matchedOption?.value || CUSTOM_PROMPT_VALUE);
+    setSelectedPrompt(CUSTOM_PROMPT_VALUE);
   }
 
   function handleClearPrompt() {
@@ -260,15 +253,25 @@ export default function ImageGenerator({
             </option>
           ))}
         </select>
+        <div style={{ display: "flex", gap: "8px", marginTop: "8px" }}>
+          <button
+            type="button"
+            className="secondary"
+            onClick={handleGenerateVariation}
+            disabled={selectedPrompt === CUSTOM_PROMPT_VALUE}
+          >
+            Generate variation
+          </button>
+          <button type="button" className="secondary" onClick={handleClearPrompt}>
+            Clear
+          </button>
+        </div>
         <textarea
           rows={7}
           value={prompt}
           onChange={(e) => handlePromptTextChange(e.target.value)}
           placeholder="Choose a preset or type your own prompt..."
         />
-        <button type="button" className="secondary" onClick={handleClearPrompt}>
-          Clear prompt
-        </button>
       </label>
       <div className="image-generator-actions">
         <label className="field compact-field">
