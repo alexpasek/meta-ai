@@ -143,9 +143,9 @@ export default {
         return new Response(null, { status: 204, headers: CORS_HEADERS });
       }
 
-      // Public media access should bypass auth
-      if (pathname.startsWith("/media/") && method === "GET") {
-        return serveMedia(pathname, env);
+      // Public media access should bypass auth. Meta may probe image URLs with HEAD before fetching.
+      if (pathname.startsWith("/media/") && (method === "GET" || method === "HEAD")) {
+        return serveMedia(pathname, env, method);
       }
 
       if (pathname === "/api/meta/oauth/callback" && method === "GET") {
@@ -496,7 +496,7 @@ async function publishNow(id, env) {
     try {
       fbInfo = await publishToFacebook(existing, env, profileConfig);
       if (!fbInfo.ok) {
-        error = `FB: ${fbInfo.error || "unknown"}`;
+        error = formatPublishError("FB", fbInfo);
       }
     } catch (e) {
       console.error("publishNow FB error:", e);
@@ -508,7 +508,7 @@ async function publishNow(id, env) {
     try {
       igInfo = await publishToInstagram(existing, env, profileConfig);
       if (igInfo && !igInfo.ok && !error) {
-        error = `IG: ${igInfo.error || "unknown"}`;
+        error = formatPublishError("IG", igInfo);
       }
     } catch (e) {
       console.error("publishNow IG error:", e);
@@ -541,6 +541,46 @@ async function publishNow(id, env) {
   const row = await env.DB.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first();
 
   return new Response(JSON.stringify(row), { headers: JSON_HEADERS });
+}
+
+function formatPublishDetail(result) {
+  if (!result) return "unknown";
+  const detail = result.detail ?? result.error ?? "unknown";
+  if (typeof detail === "string") return detail;
+  try {
+    return JSON.stringify(detail);
+  } catch {
+    return String(detail);
+  }
+}
+
+function formatPublishError(platform, result) {
+  const detail = formatPublishDetail(result);
+  if (!result?.error || detail === result.error) {
+    return `${platform}: ${detail}`;
+  }
+  return `${platform}: ${result.error} - ${detail}`;
+}
+
+function formatMetaApiErrorDetail(text) {
+  try {
+    const payload = JSON.parse(text);
+    const err = payload?.error;
+    if (!err) return JSON.stringify(payload);
+
+    const pieces = [err.message || err.error_user_msg || "Meta Graph API error"];
+    if (err.error_user_title) pieces.push(err.error_user_title);
+    if (err.error_user_msg && err.error_user_msg !== err.message) pieces.push(err.error_user_msg);
+
+    const codes = [];
+    if (err.code) codes.push(`code ${err.code}`);
+    if (err.error_subcode) codes.push(`subcode ${err.error_subcode}`);
+    if (codes.length) pieces.push(`(${codes.join(", ")})`);
+
+    return pieces.filter(Boolean).join(" ");
+  } catch {
+    return text;
+  }
 }
 
 async function retryPost(id, env) {
@@ -1161,9 +1201,9 @@ async function runScheduler(env) {
             `FB OK: ${new Date(nowTs * 1000).toISOString()} -> ${fbRes.data?.id || JSON.stringify(fbRes.data)}`
           );
         } else {
-          publishError = publishError || `FB: ${fbRes?.detail || fbRes?.error || "unknown"}`;
+          publishError = publishError || formatPublishError("FB", fbRes);
           logs.push(
-            `FB ERROR: ${new Date(nowTs * 1000).toISOString()} -> ${fbRes?.detail || fbRes?.error || ""}`
+            `FB ERROR: ${new Date(nowTs * 1000).toISOString()} -> ${formatPublishDetail(fbRes)}`
           );
         }
       }
@@ -1175,9 +1215,9 @@ async function runScheduler(env) {
             `IG OK: ${new Date(nowTs * 1000).toISOString()} -> ${igRes.data?.id || JSON.stringify(igRes.data)}`
           );
         } else {
-          publishError = publishError || `IG: ${igRes?.detail || igRes?.error || "unknown"}`;
+          publishError = publishError || formatPublishError("IG", igRes);
           logs.push(
-            `IG ERROR: ${new Date(nowTs * 1000).toISOString()} -> ${igRes?.detail || igRes?.error || ""}`
+            `IG ERROR: ${new Date(nowTs * 1000).toISOString()} -> ${formatPublishDetail(igRes)}`
           );
         }
       }
@@ -1257,7 +1297,7 @@ async function handleUpload(request, env) {
  * Serve media from R2
  * GET /media/:key
  */
-async function serveMedia(pathname, env) {
+async function serveMedia(pathname, env, method = "GET") {
     if (!env.MEDIA_BUCKET) {
         return new Response("MEDIA_BUCKET not configured", { status: 500 });
     }
@@ -1276,7 +1316,7 @@ async function serveMedia(pathname, env) {
     object.writeHttpMetadata(headers);
     headers.set("Cache-Control", "public, max-age=31536000, immutable");
 
-    return new Response(object.body, { headers });
+    return new Response(method === "HEAD" ? null : object.body, { headers });
 }
 
 /**
@@ -2039,7 +2079,7 @@ async function publishToInstagram(post, env, profileConfig) {
   const createText = await createRes.text();
   if (!createRes.ok) {
     console.error("IG media create error:", createRes.status, createText);
-    return { ok: false, error: "ig_create_error", detail: createText };
+    return { ok: false, error: "ig_create_error", detail: formatMetaApiErrorDetail(createText) };
   }
 
   let createData;
@@ -2072,7 +2112,7 @@ async function publishToInstagram(post, env, profileConfig) {
 
     if (!statusRes.ok) {
       console.error("IG status check error:", statusRes.status, statusText);
-      return { ok: false, error: "ig_status_error", detail: statusText };
+      return { ok: false, error: "ig_status_error", detail: formatMetaApiErrorDetail(statusText) };
     }
 
     let statusData;
@@ -2161,7 +2201,7 @@ async function publishToInstagram(post, env, profileConfig) {
     }
 
     console.error("IG publish error:", publishRes.status, publishText);
-    return { ok: false, error: "ig_publish_error", detail: publishText };
+    return { ok: false, error: "ig_publish_error", detail: formatMetaApiErrorDetail(publishText) };
   }
 
   // Fallback (should not hit)
