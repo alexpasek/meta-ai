@@ -563,8 +563,9 @@ function formatPublishError(platform, result) {
 }
 
 function formatMetaApiErrorDetail(text) {
+  const payload = parseJsonObject(text);
+  if (!payload) return text;
   try {
-    const payload = JSON.parse(text);
     const err = payload?.error;
     if (!err) return JSON.stringify(payload);
 
@@ -580,6 +581,14 @@ function formatMetaApiErrorDetail(text) {
     return pieces.filter(Boolean).join(" ");
   } catch {
     return text;
+  }
+}
+
+function parseJsonObject(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
   }
 }
 
@@ -1344,6 +1353,8 @@ const REQUIRED_FACEBOOK_PAGE_PERMISSIONS = [
   "pages_show_list",
   "pages_read_engagement",
   "pages_manage_posts",
+  "instagram_basic",
+  "instagram_content_publish",
 ];
 
 function parseJsonArray(value) {
@@ -1391,6 +1402,7 @@ async function getProfileConfig(env, profileKey) {
     ? {
         fbPageId: connection.page_id,
         fbToken: connection.page_access_token,
+        igToken: connection.page_access_token,
         fbSource: "db",
         fbConnection: connection,
       }
@@ -1404,7 +1416,7 @@ async function getProfileConfig(env, profileKey) {
       fbSource: connectedFb.fbSource || "env",
       fbConnection: connection,
       igUserId: env.META_IG_USER_ID,
-      igToken: env.META_IG_ACCESS_TOKEN,
+      igToken: connectedFb.igToken || env.META_IG_ACCESS_TOKEN,
     };
   }
 
@@ -1415,7 +1427,7 @@ async function getProfileConfig(env, profileKey) {
       fbSource: connectedFb.fbSource || "env",
       fbConnection: connection,
       igUserId: env.META_IG_USER_ID_EPF,
-      igToken: env.META_IG_ACCESS_TOKEN_EPF,
+      igToken: connectedFb.igToken || env.META_IG_ACCESS_TOKEN_EPF,
     };
   }
 
@@ -1426,7 +1438,7 @@ async function getProfileConfig(env, profileKey) {
       fbSource: connectedFb.fbSource || "env",
       fbConnection: connection,
       igUserId: env.META_IG_USER_ID_WALLPAPER,
-      igToken: env.META_IG_ACCESS_TOKEN_WALLPAPER,
+      igToken: connectedFb.igToken || env.META_IG_ACCESS_TOKEN_WALLPAPER,
     };
   }
 
@@ -1450,7 +1462,7 @@ async function getProfileConfig(env, profileKey) {
       fbSource: connectedFb.fbSource || "env",
       fbConnection: connection,
       igUserId: igUserId || env.META_IG_USER_ID,
-      igToken: igToken || env.META_IG_ACCESS_TOKEN,
+      igToken: connectedFb.igToken || igToken || env.META_IG_ACCESS_TOKEN,
     };
   }
 
@@ -1461,7 +1473,7 @@ async function getProfileConfig(env, profileKey) {
     fbSource: connectedFb.fbSource || "env",
     fbConnection: connection,
     igUserId: env.META_IG_USER_ID,
-    igToken: env.META_IG_ACCESS_TOKEN,
+    igToken: connectedFb.igToken || env.META_IG_ACCESS_TOKEN,
   };
 }
 
@@ -1785,8 +1797,11 @@ function classifyMetaError(payload) {
   if (code === 190 && (subcode === 458 || lower.includes("not authorized") || lower.includes("has not authorized"))) {
     return { type: "user_removed_app", reconnectRequired: true, message: "The connected Facebook user removed or deauthorized the app." };
   }
+  if (code === 190 && (subcode === 467 || lower.includes("logged out"))) {
+    return { type: "user_logged_out", reconnectRequired: true, message: "The connected Meta user session is invalid because the user logged out. Reconnect Facebook/Instagram." };
+  }
   if (code === 190) {
-    return { type: "invalid_token", reconnectRequired: true, message: "Facebook token is invalid. Reconnect Facebook." };
+    return { type: "invalid_token", reconnectRequired: true, message: "Meta access token is invalid. Reconnect Facebook/Instagram." };
   }
   if ((code === 10 || code === 200) && lower.includes("pages_manage_posts")) {
     return { type: "missing_pages_manage_posts", reconnectRequired: true, message: "Missing pages_manage_posts permission." };
@@ -2079,7 +2094,12 @@ async function publishToInstagram(post, env, profileConfig) {
   const createText = await createRes.text();
   if (!createRes.ok) {
     console.error("IG media create error:", createRes.status, createText);
-    return { ok: false, error: "ig_create_error", detail: formatMetaApiErrorDetail(createText) };
+    const payload = parseJsonObject(createText);
+    const classification = classifyMetaError(payload || { message: createText });
+    if (profileConfig.fbConnection) {
+      await markConnectionError(env, profileConfig.fbConnection, classification, payload || createText);
+    }
+    return { ok: false, error: "ig_create_error", detail: classification.message || formatMetaApiErrorDetail(createText) };
   }
 
   let createData;
@@ -2112,7 +2132,12 @@ async function publishToInstagram(post, env, profileConfig) {
 
     if (!statusRes.ok) {
       console.error("IG status check error:", statusRes.status, statusText);
-      return { ok: false, error: "ig_status_error", detail: formatMetaApiErrorDetail(statusText) };
+      const payload = parseJsonObject(statusText);
+      const classification = classifyMetaError(payload || { message: statusText });
+      if (profileConfig.fbConnection) {
+        await markConnectionError(env, profileConfig.fbConnection, classification, payload || statusText);
+      }
+      return { ok: false, error: "ig_status_error", detail: classification.message || formatMetaApiErrorDetail(statusText) };
     }
 
     let statusData;
@@ -2201,7 +2226,12 @@ async function publishToInstagram(post, env, profileConfig) {
     }
 
     console.error("IG publish error:", publishRes.status, publishText);
-    return { ok: false, error: "ig_publish_error", detail: formatMetaApiErrorDetail(publishText) };
+    const payload = parseJsonObject(publishText);
+    const classification = classifyMetaError(payload || { message: publishText });
+    if (profileConfig.fbConnection) {
+      await markConnectionError(env, profileConfig.fbConnection, classification, payload || publishText);
+    }
+    return { ok: false, error: "ig_publish_error", detail: classification.message || formatMetaApiErrorDetail(publishText) };
   }
 
   // Fallback (should not hit)
