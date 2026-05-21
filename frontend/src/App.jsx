@@ -2471,7 +2471,7 @@ ${extraDifferent}
             <small>Required permissions and Meta review notes</small>
           </summary>
           <p className="muted">
-            Required permissions: pages_show_list, pages_read_engagement, pages_manage_posts.
+            Required permissions: pages_show_list, pages_read_engagement, pages_manage_posts, instagram_basic, instagram_content_publish.
           </p>
           <ol>
             <li>Set Worker secrets:
